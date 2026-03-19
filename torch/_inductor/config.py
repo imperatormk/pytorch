@@ -2652,6 +2652,9 @@ cuda_backend: Literal["triton", "halide", "pallas"] = "triton"
 # Backend to use for TPU codegen
 tpu_backend: Literal["pallas"] = "pallas"
 
+# Backend to use for MPS codegen either "metal" (native Metal shaders) or "triton" (via Apple GPU backend)
+mps_backend: Literal["metal", "triton"] = "metal"
+
 # Backend to use for XPU codegen either "triton"
 xpu_backend: Literal["triton"] = "triton"
 

@@ -577,9 +577,13 @@ def init_backend_registration() -> None:
         )
 
     if get_scheduling_for_device("mps") is None:
+        mps_backends = {
+            "metal": MetalScheduling,
+            "triton": TritonScheduling,
+        }
         register_backend_for_device(
             "mps",
-            MetalScheduling,
+            lambda scheduling: mps_backends[config.mps_backend](scheduling),
             PythonWrapperCodegen,
             CppWrapperMps,
             WrapperFxCodegen,

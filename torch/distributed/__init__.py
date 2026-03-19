@@ -174,3 +174,9 @@ else:
 
     sys.modules["torch.distributed"].GroupName = _Stub  # type: ignore[attr-defined]
     sys.modules["torch.distributed"].ProcessGroup = _Stub  # type: ignore[attr-defined]
+
+# Stubs for fla compatibility when distributed is not fully available
+if not hasattr(sys.modules[__name__], 'DeviceMesh'):
+    class DeviceMesh:
+        pass
+    sys.modules["torch.distributed"].DeviceMesh = DeviceMesh
