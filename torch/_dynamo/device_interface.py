@@ -551,8 +551,20 @@ class MpsInterface(DeviceInterface):
         return 0
 
     @staticmethod
+    def exchange_device(device: int) -> int:
+        return 0  # MPS is single-device
+
+    @staticmethod
+    def maybe_exchange_device(device: int) -> int:
+        return 0
+
+    @staticmethod
     def get_compute_capability(device: torch.types.Device = None) -> str:
         return ""
+
+    @staticmethod
+    def get_raw_stream(device_idx: int) -> int:
+        return 0  # MPS has no streams
 
     @staticmethod
     def synchronize(device: torch.types.Device = None) -> None:
@@ -562,8 +574,36 @@ class MpsInterface(DeviceInterface):
     class Worker:
         @staticmethod
         def get_device_properties(device: torch.types.Device = None) -> Any:
-            return namedtuple("MPSProperties", ["multi_processor_count"])(
-                torch.backends.mps.get_core_count()  # type: ignore[arg-type]
+            max_threads = 1024  # Metal default
+            try:
+                import ctypes
+                objc = ctypes.cdll.LoadLibrary("/usr/lib/libobjc.A.dylib")
+                objc.objc_getClass.restype = ctypes.c_void_p
+                objc.sel_registerName.restype = ctypes.c_void_p
+                objc.objc_msgSend.restype = ctypes.c_void_p
+                objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                MTLCreateSystemDefaultDevice = ctypes.cdll.LoadLibrary(
+                    "/System/Library/Frameworks/Metal.framework/Metal"
+                ).MTLCreateSystemDefaultDevice
+                MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+                dev = MTLCreateSystemDefaultDevice()
+                sel = objc.sel_registerName(b"maxThreadsPerThreadgroup")
+                # Returns MTLSize struct {w, h, d} — width is what we want
+                class MTLSize(ctypes.Structure):
+                    _fields_ = [("width", ctypes.c_ulong), ("height", ctypes.c_ulong), ("depth", ctypes.c_ulong)]
+                objc.objc_msgSend_stret = ctypes.CFUNCTYPE(None, ctypes.POINTER(MTLSize), ctypes.c_void_p, ctypes.c_void_p)
+                result = MTLSize()
+                objc.objc_msgSend_stret(ctypes.byref(result), dev, sel)
+                max_threads = result.width
+            except Exception:
+                pass
+            return namedtuple(
+                "MPSProperties",
+                ["multi_processor_count", "max_threads_per_block", "warp_size"],
+            )(
+                torch.backends.mps.get_core_count(),  # type: ignore[arg-type]
+                max_threads,
+                32,  # simdgroup size (fixed across all Apple Silicon)
             )
 
         @staticmethod
