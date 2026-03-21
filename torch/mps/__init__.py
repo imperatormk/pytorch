@@ -231,6 +231,31 @@ def _host_alias_storage(storage: "torch.UntypedStorage") -> "torch.UntypedStorag
     return torch._C._mps_host_alias_storage(storage)
 
 
+def current_device() -> int:
+    return 0
+
+
+class device:
+    """Context manager for MPS device (single-device, no-op)."""
+    def __init__(self, device_index: int | None = None):
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        pass
+
+
+default_generators: tuple = ()
+
+
+def _init_default_generators():
+    global default_generators
+    if not default_generators and torch._C._has_mps and torch._C._mps_is_available():
+        default_generators = (_get_default_mps_generator(),)
+
+_init_default_generators()
+
+
 from . import profiler
 from .event import Event
 
