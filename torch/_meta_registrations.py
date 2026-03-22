@@ -3697,7 +3697,7 @@ def meta_convolution_backward(
         return torch.contiguous_format
 
     if output_mask[0]:
-        memory_format = _conv_memory_format(grad_output_, weight_)
+        memory_format = _conv_memory_format(input_, weight_)
         backend_grad_input = grad_output_.new_empty(input_.size()).to(
             memory_format=memory_format
         )
