@@ -530,6 +530,11 @@ class CpuInterface(DeviceInterface):
 
 
 class MpsInterface(DeviceInterface):
+    # Used by inductor autotuning/benchmarking for GPU-event timing. torch.mps
+    # provides this (it is not a torch.Event subclass, but the benchmark path
+    # uses it eagerly, not through dynamo capture).
+    Event = torch.mps.Event  # type: ignore[assignment]
+
     @staticmethod
     def is_bf16_supported(including_emulation: bool = False) -> bool:
         return True
