@@ -4099,7 +4099,10 @@ def get_current_backend(device_type: str | None = None) -> str:
     if device_type == "cpu":
         return config.cpu_backend
     elif device_type == "mps":
-        return "mps"
+        # MPS has two codegen paths: native "metal" and "triton" (out-of-tree
+        # AppleGPU backend). The triton path needs the same fp16->fp32 reduction
+        # upcasts as any other triton backend, so report "triton" for it.
+        return "triton" if config.mps_backend == "triton" else "mps"
     elif device_type == "xpu":
         return config.xpu_backend
     elif device_type == "tpu":

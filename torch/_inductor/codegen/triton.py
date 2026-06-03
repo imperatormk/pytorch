@@ -1311,6 +1311,16 @@ class TritonOverrides(OpOverrides):
 
         if use_compute_types:
             out_dtype = triton_compute_type(dtype)
+            # An explicit narrowing float cast (e.g. .to(torch.half)) must
+            # actually round through the low-precision type, even when the
+            # compute type is upcast to fp32. Without this the rounding is
+            # silently dropped and the result keeps full fp32 precision, which
+            # diverges from eager (e.g. a fp16 operand inside a fp32 cat).
+            if (
+                dtype in (torch.float16, torch.bfloat16)
+                and triton_type(dtype) != out_dtype
+            ):
+                return f"{x}.to({triton_type(dtype)}).to({out_dtype})"
         else:
             out_dtype = triton_store_type(dtype)
 
@@ -7061,6 +7071,7 @@ class TritonScheduling(SIMDScheduling):
             BackendFeature.INPLACE_BUFFERS,
             BackendFeature.MASKED_SCATTER_WITH_INDEX,
             BackendFeature.SCAN,
+            BackendFeature.SPLIT_SCAN,
             BackendFeature.SORT,
             BackendFeature.TRITON_TEMPLATES,
             BackendFeature.TUPLE_REDUCTION,
@@ -7077,14 +7088,21 @@ class TritonScheduling(SIMDScheduling):
 
     @classmethod
     def get_backend_features(cls, device: torch.device):
+        features = cls.backend_features
+        # Decoupled-lookback split scan needs 64-bit device atomics, which
+        # Apple/Metal GPUs lack -- fall back to a single cooperative scan.
+        if device.type == "mps":
+            features = OrderedSet(
+                f for f in features if f is not BackendFeature.SPLIT_SCAN
+            )
         if (
             config.triton.cooperative_reductions
             or config.triton.force_cooperative_reductions
         ):
             return OrderedSet(
-                [*cls.backend_features, BackendFeature.REDUCE_TO_SINGLE_ELEMENT]
+                [*features, BackendFeature.REDUCE_TO_SINGLE_ELEMENT]
             )
-        return cls.backend_features
+        return features
 
     def codegen_comment(self, node_schedule, kernel_name=None):
         wrapper = V.graph.wrapper_code

@@ -18,7 +18,7 @@ from torch.utils._ordered_set import OrderedSet
 
 
 logger = torch._logging.getArtifactLogger(__name__, "benchmarking")
-GPU_BENCHMARK_DEVICE_TYPES = ("cuda", "xpu", "mtia")
+GPU_BENCHMARK_DEVICE_TYPES = ("cuda", "xpu", "mtia", "mps")
 _CALLABLE_PROFILE_EVENT_NAME = "_CALLABLE"
 
 
@@ -350,9 +350,15 @@ def _default_xpu_bench(self, f, *, warmup, rep, **kw):
     return self.benchmark_gpu(f, warmup=warmup, rep=rep, **kw)
 
 
+def _default_mps_bench(self, f, *, warmup, rep, **kw):
+    kw.setdefault("device_type", "mps")
+    return self.benchmark_gpu(f, warmup=warmup, rep=rep, **kw)
+
+
 register_benchmarker("cpu", _default_cpu_bench, override=True)
 register_benchmarker("cuda", _default_cuda_bench, override=True)
 register_benchmarker("xpu", _default_xpu_bench, override=True)
+register_benchmarker("mps", _default_mps_bench, override=True)
 
 
 def _get_callable_device_kernel_time_us(

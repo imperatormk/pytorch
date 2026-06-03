@@ -1030,6 +1030,23 @@ def skip_if_pallas(fn):
 
 
 def xfail_if_mps(fn):
+    # Tracks native-Metal-backend-specific codegen limitations (e.g. "Only works
+    # for triton", "Expected to find .run("). The triton MPS backend generates
+    # Triton code and is not subject to these, so run normally there.
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        is_native_mps = is_mps_backend(self.device) and config.mps_backend == "metal"
+        if not is_native_mps:
+            return fn(self, *args, **kwargs)
+        with self.assertRaises(Exception):
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
+def xfail_if_mps_unimplemented(fn):
+    # Tracks a missing eager MPS op: fails on ANY mps backend (metal or triton),
+    # since it is an eager-level gap, not a codegen one.
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
         if not is_mps_backend(self.device):
@@ -1038,10 +1055,6 @@ def xfail_if_mps(fn):
             return fn(self, *args, **kwargs)
 
     return wrapper
-
-
-# Just an alias to track failures due to the missing eager ops
-xfail_if_mps_unimplemented = xfail_if_mps
 
 
 def skip_if_triton(fn):
@@ -2076,9 +2089,9 @@ class CommonTemplate:
             fn_opt = torch.compile(fn)
             if is_halide_backend(self.device):
                 pass  # no device asserts in halide
-            elif is_mps_backend(self.device):
+            elif is_mps_backend(self.device) and config.mps_backend == "metal":
                 _, codes = run_and_get_code(fn_opt, *inps)
-                # MPS generates Metal shader code
+                # The native Metal backend generates Metal shader code.
                 code = "\n".join(codes)
                 # Check for error reporting in MPS kernels
                 self.assertTrue(("TORCH_REPORT_ERROR" in code) is has_assert)
@@ -3297,6 +3310,7 @@ class CommonTemplate:
 
         self.common(fn, (torch.randn(4, 4), torch.randn(4, 4)))
 
+    @xfail_if_mps_unimplemented
     @skip_if_halide  # different pow accuracies
     @xfail_if_triton_cpu
     def test_norm_constant_overflow(self):
@@ -3977,11 +3991,20 @@ class CommonTemplate:
             self.common(fn, (a, b_neg))
 
     @skip_if_cpu
+    @xfail_if_mps_unimplemented  # eager MPS div_floor lacks the b==0 guard
     def test_floordiv_div_by_zero_int(self):
         # Integer floor division by zero is undefined behavior on CUDA/Triton.
         # On CPU, integer division by zero correctly raises ZeroDivisionError.
         # Eager (c10::div_floor_integer) and compiled (Triton floordiv) must
         # both return 0 for elements where the divisor is zero on GPU.
+        #
+        # On MPS the compiled Triton kernel returns 0 (matching CUDA/Triton),
+        # but the eager reference does not: the Metal div_floor_functor
+        # (aten/.../mps/kernels/BinaryKernel.metal) computes a / b directly
+        # without the b == 0 guard that c10::div_floor_integer added in
+        # PR #178016, so eager-MPS returns -1 for e.g. 1 // 0. The reference
+        # is the divergent path; our codegen is correct. Fixing this needs a
+        # torch eager (Metal kernel) change, so xfail on MPS until then.
         def fn(a, b):
             return torch.floor_divide(a, b)
 
@@ -5399,7 +5422,7 @@ class CommonTemplate:
         with config.patch({"triton.use_block_ptr": use_block_ptr}):
             self.common(fn, (torch.randn(1, 3, *[10] * dim),))
 
-    @xfail_if_mps  # aten::full with zero-sized dim triggers AcceleratorError on MPS
+    @xfail_if_mps_unimplemented  # aten::full with zero-sized dim triggers AcceleratorError on MPS
     def test_max_unpool_empty_output(self):
         class Unpool1d(nn.Module):
             def __init__(self):
@@ -5927,7 +5950,7 @@ class CommonTemplate:
             )
 
     @skip_if_gpu_halide  # slow
-    @xfail_if_mps  # Non-divisible input sizes are not implemented on MPS device
+    @xfail_if_mps_unimplemented  # Non-divisible input sizes are not implemented on MPS device
     @parametrize("combo_kernels", (False, True))
     def test_adaptive_avg_pool2d1(self, combo_kernels):
         with config.patch(combo_kernels=combo_kernels):
@@ -5955,7 +5978,7 @@ class CommonTemplate:
                 (torch.randn(2, 4, 6, 6),),
             )
 
-    @xfail_if_mps  # Non-divisible input sizes are not implemented on MPS device
+    @xfail_if_mps_unimplemented  # Non-divisible input sizes are not implemented on MPS device
     def test_adaptive_avg_pool2d2(self):
         # Big kernel size, use fallback
         def fn(x):
@@ -5971,7 +5994,7 @@ class CommonTemplate:
 
     @requires_gpu()
     @skip_if_gpu_halide  # slow
-    @xfail_if_mps  # Non-divisible input sizes are not implemented on MPS device
+    @xfail_if_mps_unimplemented  # float64 input, unsupported on MPS
     @parametrize("comprehensive_padding", (False, True))
     def test_adaptive_avg_pool2d_flatten_sum(self, comprehensive_padding):
         def fn(x):
@@ -5985,7 +6008,7 @@ class CommonTemplate:
                 check_lowp=False,
             )
 
-    @xfail_if_mps
+    @xfail_if_mps_unimplemented
     @skip_if_gpu_halide  # slow
     def test_adaptive_max_pool2d1(self):
         def fn(x):
@@ -6287,7 +6310,7 @@ class CommonTemplate:
 
         self.assertEqual(eager_delta, compile_delta)
 
-    @xfail_if_mps  # Non-divisible input sizes are not implemented on MPS device
+    @xfail_if_mps_unimplemented  # Non-divisible input sizes are not implemented on MPS device
     def test_adaptive_avg_pool_with_output_size_0(self):
         m1 = nn.AdaptiveAvgPool1d(0)
         self.common(m1, (torch.randn(1, 2),))
@@ -9985,7 +10008,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 (a, b),
             )
 
-    @xfail_if_mps  # dtypes mismatch
+    @xfail_if_mps_unimplemented  # dtypes mismatch
     def test_nll_loss_backward(self):
         def fn(a, b, c):
             return aten.nll_loss_backward(
@@ -10004,7 +10027,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 (a, b, c),
             )
 
-    @xfail_if_mps  # dtypes mismatch
     def test_nll_loss_backward_1d_input(self):
         # 1D input with 1D target used to crash the decomposition because
         # target.unsqueeze(0) produced a 2D index for a 1D scatter.
@@ -11560,7 +11582,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     @patch.object(torch._functorch.config, "functionalize_rng_ops", True)
     @expectedFailureXPU
     @skip_if_gpu_halide  # rand
-    @xfail_if_mps
+    @xfail_if_mps_unimplemented
     def test_philox_rand(self):
         if self.device == "cpu":
             raise unittest.SkipTest(
@@ -11879,7 +11901,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             ],
         )
 
-    @xfail_if_mps  # Small tolerances bug
+    @xfail_if_mps_unimplemented  # Small tolerances bug
     @skip_if_gpu_halide  # slow
     def test_max_pool2d_with_indices_backward2(self):
         def fn(a, b, c):
@@ -11932,7 +11954,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         )
 
     # From https://github.com/pytorch/torchdynamo/issues/1352
-    @xfail_if_mps  # Small tolerances bug
+    @xfail_if_mps_unimplemented  # Small tolerances bug
     @skip_if_halide  # hangs forever
     def test_max_pool2d_with_indices_backward4(self):
         def fn(a, b, c):
@@ -12143,6 +12165,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         )
 
     @skip_if_halide  # compiles for 5+ minutes
+    @xfail_if_mps_unimplemented  # exceeds MPS 32KB threadgroup memory limit
     def test_avg_pool3d_backward2(self):
         def fn(a, b):
             return aten.avg_pool3d_backward(
@@ -12311,7 +12334,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         self.assertTrue(same(r2, r3))
         self.assertTrue(same(g2, g3))
 
-    @xfail_if_mps
+    @xfail_if_mps_unimplemented
     @config.patch(search_autotune_cache=False)
     def test_dropout3(self):
         if is_mps_backend(self.device) and torch._inductor.config.align_random_eager:
@@ -12447,7 +12470,8 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         t1 = torch.randint(8, size=(1028, 1028))
         self.common(fn, (t1,))
 
-    @xfail_if_mps  # eager nan is wrong, see https://github.com/pytorch/pytorch/issues/130295
+    @skipIfXpu(msg="# Incorrect XPU reference ")
+    @xfail_if_mps_unimplemented  # eager nan is wrong, see https://github.com/pytorch/pytorch/issues/130295
     @skip_if_halide  # nan behavior
     def test_argmax_argmin_with_nan(self):
         def fn(x):
@@ -15642,7 +15666,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         pt2_optimizer_step(o)
 
     # Skipped on MPS because avgpool size is not divisible
-    @xfail_if_mps
+    @xfail_if_mps_unimplemented
     @skip_if_gpu_halide
     def test_adaptive_avg_pool1d_argmax(self):
         # https://github.com/pytorch/pytorch/issues/113013
@@ -16034,7 +16058,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         result = f(torch.tensor([20]))
         self.assertTrue(len(result) == 3)
 
-    @xfail_if_mps
+    @xfail_if_mps_unimplemented
     def test_generate_rand_fp8(self):
         """
         PyTorch can not generate fp8 tensors with a normal distribution because of

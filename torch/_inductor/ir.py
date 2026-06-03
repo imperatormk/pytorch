@@ -2887,9 +2887,14 @@ class Scan(Loops):
         scan_type = Scan
         if num_splits > 1:
             supports_split = (
-                # pyrefly: ignore [unsupported-operation]
-                torch.version.hip is None or (has_triton and triton_version >= "3.3.0")
-            ) and (len(dtypes) == 1)
+                (
+                    # pyrefly: ignore [unsupported-operation]
+                    torch.version.hip is None
+                    or (has_triton and triton_version >= "3.3.0")
+                )
+                and (len(dtypes) == 1)
+                and V.graph.has_feature(device, BackendFeature.SPLIT_SCAN)
+            )
             if not supports_split:
                 if can_fallback_to_aten:
                     # Fallback to ATen

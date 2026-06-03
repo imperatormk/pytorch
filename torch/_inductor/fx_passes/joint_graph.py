@@ -1164,8 +1164,12 @@ def scatter_upon_const_tensor(
         # Create a mask for where to scatter
         mask = selector_expanded == indices_view
 
-        # Use torch.where to implement the scatter pointwise operation
-        return torch.where(mask, val, background_val)
+        # Use torch.where to implement the scatter pointwise operation.
+        # Both branches are python scalars, so torch.where would otherwise
+        # produce the default float dtype (f32) and silently widen a
+        # low-precision const tensor; round back to the original dtype to
+        # match eager scatter.value, which keeps the self tensor's dtype.
+        return torch.where(mask, val, background_val).to(dtype)
 
     # replace the scatter operation with pointwise equivalent
     # pyrefly: ignore [bad-argument-type]

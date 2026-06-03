@@ -436,6 +436,10 @@ class BackendFeature(Enum):
     INPLACE_BUFFERS = auto()
     MASKED_SCATTER_WITH_INDEX = auto()
     SCAN = auto()
+    # Decoupled-lookback split scan requires 64-bit device atomics, which some
+    # GPUs (e.g. Apple/Metal) lack. Backends without it fall back to a single
+    # cooperative (associative) scan kernel.
+    SPLIT_SCAN = auto()
     SORT = auto()
     TUPLE_REDUCTION = auto()
     PREFER_STORE_LOOP_ORDER = auto()
