@@ -22,13 +22,30 @@ void MPSEvent::recordLocked(bool syncEvent) {
   // active encoders must end before encoding or waiting
   m_stream->endKernelCoalescing();
   ++m_signalCounter;
-  if (m_enable_timing) {
-    notifyLocked(^(id<MTLSharedEvent>, uint64_t) {
-      m_completion_time = getTime();
-      notifyCpuSync();
-    });
-  }
   id<MTLCommandBuffer> commandBuffer = m_stream->commandBuffer();
+  if (m_enable_timing) {
+    // Use the command buffer's GPUEndTime: a real GPU timestamp (seconds) for
+    // when this buffer finished executing, instead of a CPU monotonic-clock
+    // sample taken when the CPU thread observes the shared-event signal. The CPU
+    // sample jitters and, for back-to-back fast kernels, ties or inverts across
+    // event pairs, which collapses elapsed_time to 0 and makes the inductor
+    // autotuner unable to rank choices. GPUEndTime is precise and monotonic.
+    // The completed handler fires once the buffer's GPU work (and GPUEndTime) is
+    // final; set the completion time and release any waitForCpuSync there, so a
+    // reader never observes a stale time. Fall back to the CPU clock only if the
+    // GPU timestamp is unavailable (== 0).
+    notifyLocked(^(id<MTLSharedEvent>, uint64_t) {});
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+      double gpuStart = [cb GPUStartTime];
+      double gpuEnd = [cb GPUEndTime];
+      uint64_t cpuNow = getTime();
+      m_start_time =
+          gpuStart > 0.0 ? static_cast<uint64_t>(gpuStart * 1e9) : cpuNow;
+      m_completion_time =
+          gpuEnd > 0.0 ? static_cast<uint64_t>(gpuEnd * 1e9) : cpuNow;
+      notifyCpuSync();
+    }];
+  }
   [commandBuffer encodeSignalEvent:m_event value:m_signalCounter];
   if (syncEvent) {
     m_stream->synchronize(SyncType::COMMIT);
@@ -138,6 +155,7 @@ void MPSEvent::reset(MPSStream* stream, bool enable_timing) {
   }
   // reset record time
   m_completion_time = 0;
+  m_start_time = 0;
   m_enable_timing = enable_timing;
   m_cpu_sync_completed = false;
 };
@@ -231,16 +249,20 @@ double MPSEventPool::elapsedTime(id_t start_event_id, id_t end_event_id) {
   // start event's completion time can still be stale when it is read below.
   start_event->waitForCpuSync();
   end_event->waitForCpuSync();
-  const uint64_t start_time = start_event->getCompletionTime();
+  // GPU timestamps (ns) of the events' command buffers. Use the start event's
+  // buffer GPUStartTime and the end event's buffer GPUEndTime, so the interval
+  // spans the work between them: when both events share one command buffer (the
+  // inductor benchmark pattern: start.record(); kernel(); end.record(); commit)
+  // this is exactly that buffer's GPU execution duration, and when they are on
+  // different buffers (CUDA-style) it spans from the first's start to the last's
+  // end. Reading both events' GPUEndTime instead would give 0 for the shared-
+  // buffer case.
+  const uint64_t start_time = start_event->getStartTime();
   const uint64_t end_time = end_event->getCompletionTime();
 
   TORCH_CHECK(start_time > 0 && end_time > 0, "Events were not created with argument 'enable_timing=True'");
-  // Completion times are CPU monotonic-clock samples taken inside each event's
-  // GPU-completion callback, not GPU timestamps. For a very short region the two
-  // callbacks can fire within the timer's effective resolution or be observed
-  // out of order, so end_time may be <= start_time. That is a sub-resolution
-  // measurement, not "end recorded before start": clamp to 0 instead of failing,
-  // which would abort an entire autotuning choice over an unmeasurably fast run.
+  // A region below the GPU timer resolution can still measure end <= start;
+  // treat that as 0ms rather than erroring out an entire autotuning choice.
   if (end_time <= start_time) {
     return 0.0;
   }

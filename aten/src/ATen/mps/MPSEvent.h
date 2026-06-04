@@ -37,6 +37,10 @@ class MPSEvent {
   uint64_t getCompletionTime() const {
     return m_completion_time;
   }
+  // returns the GPU start timestamp of the event's command buffer
+  uint64_t getStartTime() const {
+    return m_start_time;
+  }
   // if already recorded, waits for cpu_sync_cv to be signaled
   void waitForCpuSync();
 
@@ -53,8 +57,9 @@ class MPSEvent {
   std::condition_variable m_cpu_sync_cv{};
   // CondVar predicate to sync the events created on this Stream with CPU
   bool m_cpu_sync_completed = false;
-  // used to compute elapsed time
+  // used to compute elapsed time (GPU timestamps of the event's command buffer)
   uint64_t m_completion_time = 0;
+  uint64_t m_start_time = 0;
 
   void recordLocked(bool syncEvent);
   bool waitLocked(bool syncEvent);
