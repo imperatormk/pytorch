@@ -142,6 +142,20 @@ class DepthwiseConvConfig:
 
 
 @dataclasses.dataclass
+class DepthwiseConv2dConfig:
+    """
+    Configuration for the direct (no tl.dot) depthwise conv2d Triton template.
+    Tiles BLOCK_X output pixels (flattened over batch * OUT_H * OUT_W) times
+    BLOCK_C channels.
+    """
+
+    block_x: int
+    block_c: int
+    num_stages: int
+    num_warps: int
+
+
+@dataclasses.dataclass
 class BlackwellGPUGemmConfig(GemmConfig):
     """
     Gemm configuration used for templates with features explicitly
@@ -778,6 +792,21 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
             ),
         ]
 
+        # Direct depthwise conv2d configs: BLOCK_X output pixels times BLOCK_C
+        # channels. Each channel is independent and the KH x KW window is small,
+        # so we want enough pixels in flight to hide load latency while keeping
+        # the threadgroup footprint modest.
+        self.depthwise_conv2d_configs: list[DepthwiseConv2dConfig] = [
+            DepthwiseConv2dConfig(block_x=64, block_c=32, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=128, block_c=32, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=64, block_c=64, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=128, block_c=64, num_stages=2, num_warps=8),
+            DepthwiseConv2dConfig(block_x=256, block_c=32, num_stages=2, num_warps=8),
+            DepthwiseConv2dConfig(block_x=32, block_c=128, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=64, block_c=128, num_stages=2, num_warps=8),
+            DepthwiseConv2dConfig(block_x=1024, block_c=16, num_stages=2, num_warps=8),
+        ]
+
         self.flex_attn_fwd_autotune_configs: list[FlexConfig] = [
             FlexConfig(128, 64, 3, 4),
             FlexConfig(128, 128, 3, 4),
@@ -1166,6 +1195,20 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
                 num_warps=cfg.num_warps,
             )
             for cfg in self.depthwise_conv_configs
+        ]
+
+    def get_depthwise_conv2d_configs(self) -> list[TritonConfig]:
+        """Return TritonConfig list for direct depthwise conv2d autotuning."""
+        return [
+            TritonConfig(
+                {
+                    "BLOCK_X": cfg.block_x,
+                    "BLOCK_C": cfg.block_c,
+                },
+                num_stages=cfg.num_stages,
+                num_warps=cfg.num_warps,
+            )
+            for cfg in self.depthwise_conv2d_configs
         ]
 
     # Flex attn helpers

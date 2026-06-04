@@ -85,6 +85,23 @@ depthwise_conv1d_template = TritonTemplate(
     cache_codegen_enabled_for_template=True,
 )
 
+
+@SymbolicGridFn
+def depthwise_conv2d_grid(n, c, h, w, meta, *, cdiv):
+    return (
+        cdiv(n * h * w, meta["BLOCK_X"]),
+        cdiv(c, meta["BLOCK_C"]),
+        1,
+    )
+
+
+depthwise_conv2d_template = TritonTemplate(
+    name="depthwise_conv2d",
+    grid=depthwise_conv2d_grid,
+    source=load_kernel_template("triton_depthwise_conv2d"),
+    cache_codegen_enabled_for_template=True,
+)
+
 LOOP_BODY_2D = """
         idx_x_h = i - PADDING_H + idx_y_h * STRIDE_H
         idx_x_w = j - PADDING_W + idx_y_w * STRIDE_W
@@ -647,6 +664,26 @@ def convolution(
                     KERNEL_SIZE=kernel_shape[0],
                     CONV_STRIDE=stride[0],
                     PADDING=padding[0],
+                    num_stages=cfg.num_stages,
+                    num_warps=cfg.num_warps,
+                    **cfg.kwargs,
+                )
+
+        if is_depthwise and ndim == 2:
+            depthwise2d_configs = V.choices.get_depthwise_conv2d_configs(device_type)
+            for cfg in depthwise2d_configs:
+                depthwise_conv2d_template.maybe_append_choice(
+                    choices,
+                    input_nodes=(x, weight),
+                    layout=layout,
+                    KERNEL_H=kernel_shape[0],
+                    KERNEL_W=kernel_shape[1],
+                    STRIDE_H=stride[0],
+                    STRIDE_W=stride[1],
+                    PADDING_H=padding[0],
+                    PADDING_W=padding[1],
+                    DILATION_H=dilation[0],
+                    DILATION_W=dilation[1],
                     num_stages=cfg.num_stages,
                     num_warps=cfg.num_warps,
                     **cfg.kwargs,
