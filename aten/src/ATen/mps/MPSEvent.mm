@@ -226,14 +226,24 @@ double MPSEventPool::elapsedTime(id_t start_event_id, id_t end_event_id) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   MPSEvent* start_event = getInUseEvent(start_event_id, false);
   MPSEvent* end_event = getInUseEvent(end_event_id, false);
-  // the notify is called on a separate thread, so this waits for that
+  // the completion-time notify blocks run on a separate thread, so wait for both
+  // events (not just the end one) before reading their timestamps; otherwise the
+  // start event's completion time can still be stale when it is read below.
+  start_event->waitForCpuSync();
   end_event->waitForCpuSync();
   const uint64_t start_time = start_event->getCompletionTime();
   const uint64_t end_time = end_event->getCompletionTime();
 
   TORCH_CHECK(start_time > 0 && end_time > 0, "Events were not created with argument 'enable_timing=True'");
-  TORCH_CHECK(
-      end_time > start_time, "End event ", end_event_id, " was not recorded after start event ", start_event_id);
+  // Completion times are CPU monotonic-clock samples taken inside each event's
+  // GPU-completion callback, not GPU timestamps. For a very short region the two
+  // callbacks can fire within the timer's effective resolution or be observed
+  // out of order, so end_time may be <= start_time. That is a sub-resolution
+  // measurement, not "end recorded before start": clamp to 0 instead of failing,
+  // which would abort an entire autotuning choice over an unmeasurably fast run.
+  if (end_time <= start_time) {
+    return 0.0;
+  }
   return double(end_time - start_time) * 1e-6;
 }
 

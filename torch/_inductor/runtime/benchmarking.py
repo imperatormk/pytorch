@@ -596,27 +596,19 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
 
         device_type = _normalize_gpu_device_type(device_type)
 
-        # The experimental benchmarker records many back-to-back event pairs in a
-        # single un-committed loop and then calls elapsed_time across all of them.
-        # That pattern is CUDA-shaped; on MPS, events recorded without an
-        # intervening command-buffer commit do not all resolve, so elapsed_time
-        # raises "End event N was not recorded after start event". Delegate MPS to
-        # the Triton do_bench path (TritonBenchmarker.benchmark_gpu), which is
-        # MPS-aware via the AppleGPU backend and times a single region correctly.
-        if device_type == "mps":
-            return TritonBenchmarker.benchmark_gpu(
-                self,
-                _callable,
-                return_mode=return_mode,
-                grad_to_none=grad_to_none,
-                is_vetted_benchmarking=is_vetted_benchmarking,
-                **kwargs,
-            )
-
         if not is_vetted_benchmarking:
             may_ban_benchmarking()
 
         device_interface = get_interface_for_device(device_type)
+
+        # MPS times events by the GPU completion timestamp of the command buffer
+        # they are signalled on. Recording many start/end pairs back-to-back on a
+        # single un-committed buffer (the CUDA-shaped pattern below) leaves every
+        # pair sharing one completion time, so elapsed_time sees end_time ==
+        # start_time and raises "End event N was not recorded after start event".
+        # Committing after each pair gives every region its own command buffer and
+        # a distinct timestamp. CUDA/XPU keep the cheaper single-commit path.
+        sync_each_pair = device_type == "mps"
 
         # we don't want any outside errors propagating into benchmarking
         device_interface.synchronize()
@@ -644,6 +636,8 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
             start_event.record()
             _callable()
             end_event.record()
+            if sync_each_pair:
+                device_interface.synchronize()
         device_interface.synchronize()
         estimated_timing = self.get_event_pairs_min_timing(event_pairs)
 
@@ -668,6 +662,8 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
             start_event.record()
             _callable()
             end_event.record()
+            if sync_each_pair:
+                device_interface.synchronize()
         device_interface.synchronize()
 
         # explicitly delete the buffer, sometimes helps memory
