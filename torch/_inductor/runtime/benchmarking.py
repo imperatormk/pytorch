@@ -594,10 +594,28 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
         - If return_mode="all": List of all runtime measurements, in milliseconds.
         """
 
+        device_type = _normalize_gpu_device_type(device_type)
+
+        # The experimental benchmarker records many back-to-back event pairs in a
+        # single un-committed loop and then calls elapsed_time across all of them.
+        # That pattern is CUDA-shaped; on MPS, events recorded without an
+        # intervening command-buffer commit do not all resolve, so elapsed_time
+        # raises "End event N was not recorded after start event". Delegate MPS to
+        # the Triton do_bench path (TritonBenchmarker.benchmark_gpu), which is
+        # MPS-aware via the AppleGPU backend and times a single region correctly.
+        if device_type == "mps":
+            return TritonBenchmarker.benchmark_gpu(
+                self,
+                _callable,
+                return_mode=return_mode,
+                grad_to_none=grad_to_none,
+                is_vetted_benchmarking=is_vetted_benchmarking,
+                **kwargs,
+            )
+
         if not is_vetted_benchmarking:
             may_ban_benchmarking()
 
-        device_type = _normalize_gpu_device_type(device_type)
         device_interface = get_interface_for_device(device_type)
 
         # we don't want any outside errors propagating into benchmarking
