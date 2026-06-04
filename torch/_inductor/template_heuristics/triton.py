@@ -2086,6 +2086,20 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(64, 64, 16, 2, 4),
             GemmConfig(64, 64, 32, 2, 4),
         ]
+        # The inherited conv_configs are tuned for NVIDIA smem (up to 128x256 and
+        # 128x128x128, ~64KB of f32 staging) and all OOM on Apple's 32KB
+        # threadgroup budget, flooding the autotuner with OutOfResources configs
+        # that leave aten the only choice. Replace with tiles whose double-
+        # buffered (BM*BK + BK*BN) f32 staging fits 32KB.
+        self.conv_configs = [
+            ConvConfig(32, 32, 16, 2, 2),
+            ConvConfig(32, 32, 32, 2, 2),
+            ConvConfig(64, 32, 16, 2, 4),
+            ConvConfig(32, 64, 16, 2, 4),
+            ConvConfig(64, 64, 16, 2, 4),
+            ConvConfig(64, 32, 32, 2, 4),
+            ConvConfig(32, 64, 32, 2, 4),
+        ]
         # Keep exhaustive search aligned with the default space; we have not
         # validated a larger Apple-GPU search space.
         self.exhaustive_configs = self.mm_configs
