@@ -6445,7 +6445,19 @@ def meta__scaled_dot_product_attention_math_for_mps(
     _, _, max_seq_length, value_head_size = v_.shape
 
     def sdpa_general_mps():
-        out = q_.new_empty((batch_size, num_head, q_size, value_head_size))
+        out_shape = (batch_size, num_head, q_size, value_head_size)
+        # The real MPSGraph kernel preserves q's memory layout for the output
+        # when the output shape matches q's shape (the common square head-dim
+        # case, value_head_size == q head size). It only emits a contiguous
+        # output otherwise. Mirror that so inductor's assert_size_stride agrees;
+        # a contiguous new_empty here diverges from the real transposed strides
+        # for permuted q/k/v and breaks attention models under inductor.
+        if out_shape == tuple(q_.shape) and not q_.is_contiguous():
+            out = torch.empty_strided(
+                out_shape, q_.stride(), dtype=q_.dtype, device=q_.device
+            )
+        else:
+            out = q_.new_empty(out_shape)
         attn = q_.new_empty((batch_size, num_head, q_size, max_seq_length))
         if unsqueezed:
             if query.dim() == 3:
