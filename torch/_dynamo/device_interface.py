@@ -535,6 +535,21 @@ class MpsInterface(DeviceInterface):
     # uses it eagerly, not through dynamo capture).
     Event = torch.mps.Event  # type: ignore[assignment]
 
+    # MPS is single-device, so selecting a device index is a no-op. The inductor
+    # GEMM autotune benchmark path enters `device_interface.device(idx)` before
+    # timing a Triton template; without this context manager it would inherit the
+    # base NotImplementedError and every Triton mm choice would fail to benchmark
+    # (falling back to aten::mm by default).
+    class device:
+        def __init__(self, device: torch.types.Device = None) -> None:
+            pass
+
+        def __enter__(self) -> None:
+            pass
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
     @staticmethod
     def is_bf16_supported(including_emulation: bool = False) -> bool:
         return True

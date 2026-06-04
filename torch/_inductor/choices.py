@@ -271,6 +271,17 @@ class InductorChoices:
                 "addmm",
             ]:
                 return True
+            # When the AppleGPU Triton backend contributes a real (non-extern)
+            # GEMM template choice, that template lowers through codegen and
+            # requires a fixed output layout. Without max_autotune_gemm set the
+            # generic gate below leaves mm/addmm flexible, which trips the
+            # "convert FlexibleLayout to FixedLayout first" assertion. Fix the
+            # layout whenever an mps Triton template is in the choice set.
+            if adjusted_choices[0].inputs.device_type == "mps" and any(
+                not isinstance(ktc.template, ExternKernelChoice)
+                for ktc in adjusted_choices
+            ):
+                return True
 
         # Origami requires fixed layouts (grid/workgroup mappings depend on exact
         # strides). Gate on IS_ROCM so a stray TORCHINDUCTOR_ORIGAMI=1 on CUDA

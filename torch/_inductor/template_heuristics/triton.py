@@ -2049,6 +2049,48 @@ class MTIAConfigHeuristic(BaseConfigHeuristic):
     """
 
 
+class MPSConfigHeuristic(BaseConfigHeuristic):
+    """
+    Apple GPU (MPS / Metal) specific config heuristic.
+
+    Constraints specific to the out-of-tree AppleGPU Triton backend:
+    - A warp is a Metal simdgroup of 32 threads (warpSize=32). Useful warp
+      counts are 1/2/4; 8 warps (256 threads) rarely helps and is dropped.
+    - There is a hard 32KB threadgroup-memory budget per dispatch. The MMA
+      lowering stages both operands plus an mma->blocked output conversion in
+      threadgroup memory, so block tiles must stay small. The backend itself
+      reports OutOfResources for over-budget configs and the autotuner discards
+      them, but we keep the default config space small so we do not flood the
+      autotuner with configs that always OOM.
+    - Apple GPU has no NVIDIA-style async-copy pipelining, so num_stages>1 buys
+      no performance. num_stages is pinned to 2 only because num_stages=1 makes
+      the AppleGPU backend emit a metallib that Metal's runtime rejects at PSO
+      creation ("Failed to materializeAll"); num_stages=2 is the smallest value
+      that materializes. See METALLC_NOTES.md item 3. We deliberately do NOT
+      sweep num_stages (a single value keeps the autotune space small).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps). Tiles are sized so
+        # that f32 staging of A (M*K) + B (K*N) plus the mma->blocked output
+        # conversion fits inside the 32KB threadgroup budget. num_stages is fixed
+        # at 2 (see class docstring: dodges the num_stages=1 PSO failure; Metal
+        # has no pipelining so the extra stage costs nothing meaningful).
+        self.mm_configs = [
+            GemmConfig(16, 16, 16, 2, 1),
+            GemmConfig(32, 32, 16, 2, 2),
+            GemmConfig(32, 32, 32, 2, 2),
+            GemmConfig(64, 32, 16, 2, 4),
+            GemmConfig(32, 64, 16, 2, 4),
+            GemmConfig(64, 64, 16, 2, 4),
+            GemmConfig(64, 64, 32, 2, 4),
+        ]
+        # Keep exhaustive search aligned with the default space; we have not
+        # validated a larger Apple-GPU search space.
+        self.exhaustive_configs = self.mm_configs
+
+
 # Template-specific mixin classes
 class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
     """
@@ -3481,3 +3523,31 @@ class MTIAMMPlusMMTemplateConfigHeuristic(
         # TODO(coconutruben): remove this once we have validated exhaustive support
         # for scaled_mm
         self.exhaustive_configs = self.mm_plus_mm_configs
+
+
+# MPS (Apple GPU / Metal) template-specific classes
+
+
+@register_template_heuristic(mm_template.uid, "mps")
+@register_template_heuristic(bmm_template.uid, "mps")
+class MPSMMTemplateConfigHeuristic(MMTemplateConfigMixin, MPSConfigHeuristic):
+    """Standard MM template heuristic for Apple GPU (MPS)"""
+
+    def should_run(self, inputs: KernelInputs) -> bool:
+        # Selecting the Triton MPS backend (mps_backend == "triton") is itself
+        # the opt-in for routing matmuls to the simdgroup-MMA Triton template, so
+        # we generate configs without also requiring the global max_autotune_gemm
+        # flag. ATEN (MPSGraph) stays in the choice set, so the autotuner still
+        # picks the faster of the two.
+        if (
+            inputs.device_type == "mps"
+            and config.mps_backend == "triton"
+        ):
+            return True
+        return super().should_run(inputs)
+
+
+@register_template_heuristic(mm_template.uid, "mps", op_name="addmm")
+@register_template_heuristic(bmm_template.uid, "mps", op_name="baddbmm")
+class MPSAddmmTemplateConfigHeuristic(AddMMConfigMixin, MPSMMTemplateConfigHeuristic):
+    """Addmm specific heuristic for Apple GPU (MPS)"""
