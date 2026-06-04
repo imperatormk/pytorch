@@ -2092,13 +2092,13 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # that leave aten the only choice. Replace with tiles whose double-
         # buffered (BM*BK + BK*BN) f32 staging fits 32KB.
         self.conv_configs = [
+            ConvConfig(64, 128, 16, 2, 4),
+            ConvConfig(64, 64, 16, 2, 4),
+            ConvConfig(32, 64, 16, 2, 4),
+            ConvConfig(64, 32, 16, 2, 4),
             ConvConfig(32, 32, 16, 2, 2),
             ConvConfig(32, 32, 32, 2, 2),
-            ConvConfig(64, 32, 16, 2, 4),
-            ConvConfig(32, 64, 16, 2, 4),
-            ConvConfig(64, 64, 16, 2, 4),
             ConvConfig(64, 32, 32, 2, 4),
-            ConvConfig(32, 64, 32, 2, 4),
         ]
         # Keep exhaustive search aligned with the default space; we have not
         # validated a larger Apple-GPU search space.

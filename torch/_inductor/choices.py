@@ -26,6 +26,7 @@ from .template_heuristics.triton import (
     CPUConfigHeuristic,
     CUDAConfigHeuristic,
     IS_ROCM,
+    MPSConfigHeuristic,
     MTIAConfigHeuristic,
     ROCmConfigHeuristic,
     XPUConfigHeuristic,
@@ -142,6 +143,8 @@ class InductorChoices:
             return CPUConfigHeuristic()
         elif device_type == "mtia":
             return MTIAConfigHeuristic()
+        elif device_type == "mps":
+            return MPSConfigHeuristic()
         else:
             return BaseConfigHeuristic()
 
