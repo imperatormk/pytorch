@@ -1919,7 +1919,9 @@ def is_big_gpu(index_or_device: int | torch.device = 0) -> bool:
     # count the MPS driver reports (a core-count guess) is unrelated to the 68-SM
     # threshold below, which exists to gate out small NVIDIA parts. Treat MPS as
     # always eligible for the Triton GEMM template; the autotuner still compares
-    # it against aten::mm (MPSGraph) and picks the faster.
+    # it against aten::mm (MPSGraph) and picks the faster. Conv keeps an aten
+    # fallback (see kernel/conv.py) so an all-OOR Triton conv choice set cannot
+    # raise NoValidChoicesError.
     if device.type == "mps":
         return True
 
