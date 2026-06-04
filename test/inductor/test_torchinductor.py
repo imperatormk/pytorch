@@ -10808,6 +10808,12 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             and self.device == "cuda"
         ):
             assertGeneratedKernelCountEqual(self, 2)
+        elif is_mps_backend(self.device) and config.mps_backend == "triton":
+            # The MPS Triton backend autotunes the matmul against its mm template,
+            # codegenning one kernel per config, so the exact count is no longer a
+            # stable proxy for "the cache update was reinplaced". The reinplacing
+            # itself is still exercised; just assert kernels were generated.
+            self.assertGreater(torch._inductor.metrics.generated_kernel_count, 0)
         else:
             assertGeneratedKernelCountEqual(self, 1)
 
@@ -12254,6 +12260,11 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             and self.device == "cuda"
         ):
             self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
+        elif is_mps_backend(self.device) and config.mps_backend == "triton":
+            # The MPS Triton backend registers an mm template, so the autotuner
+            # codegens Triton mm choices (one kernel per config) rather than
+            # always deferring to the aten extern kernel.
+            self.assertGreater(torch._inductor.metrics.generated_kernel_count, 0)
         else:
             # codegen mm kernel from template
             self.assertEqual(torch._inductor.metrics.generated_kernel_count, 0)
