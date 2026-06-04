@@ -2092,6 +2092,17 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # that leave aten the only choice. Replace with tiles whose double-
         # buffered (BM*BK + BK*BN) f32 staging fits 32KB.
         self.conv_configs = [
+            # Small 16x16x16 tile first: for depthwise/grouped conv the per-group
+            # output channel count GROUP_OUT_C = OUT_C // GROUPS and contraction
+            # GROUP_IN_C = IN_C // GROUPS are both tiny (1 for true depthwise), so
+            # the masked implicit-GEMM dot has only one live output column and one
+            # live contraction element. Large BM/BN/BK tiles then issue many fully
+            # masked-dead simdgroup MMAs and stage huge masked operands through
+            # threadgroup memory; measured 19.97ms at 32x32x16 (129 MMAs) vs
+            # 14.40ms at 16x16x16 (9 MMAs) for nn.Conv2d(64,64,7,groups=64) on a
+            # 1x64x32x32 input. The 16x16x16 tile is the floor the Apple MMA path
+            # accepts (BlockedToAppleMma requires M,N >= 16 and %8 == 0).
+            ConvConfig(16, 16, 16, 2, 1),
             ConvConfig(64, 128, 16, 2, 4),
             ConvConfig(64, 64, 16, 2, 4),
             ConvConfig(32, 64, 16, 2, 4),
