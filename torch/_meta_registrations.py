@@ -6502,13 +6502,21 @@ def meta__scaled_dot_product_attention_math_for_mps(
 
     # The prefill kernel runs on q after a stride(-1) == 1 contiguity coercion:
     # if q's last dim is already unit-stride (true for transposed views) it is
-    # used as-is and the output preserves q's strides; otherwise q is made
-    # contiguous first and the output is contiguous too.
+    # used as-is, otherwise q is made contiguous first. Either way the C++
+    # prefill path allocates its output with at::empty_like(q_), which mirrors
+    # q's memory FORMAT (its dim ordering) but re-densifies the strides. That is
+    # not the same as q's literal strides when q is a non-dense interleaved view
+    # (e.g. the q/k/v produced by a fused-qkv Linear -> reshape(B,N,3,H,Hd) ->
+    # permute(2,0,3,1,4) -> unbind: q's seq-dim stride is 3*dim, but empty_like
+    # repacks it to dim). torch.empty_like reproduces that exact densification,
+    # so it matches the real op for both plain transposed views (where the
+    # literal and densified strides coincide) and fused-qkv unbind views (where
+    # they do not). See https://github.com/pytorch/pytorch/issues/177603.
     out_shape = (batch_size, num_head, q_size, value_head_size)
     if supports_prefill and q_.stride(-1) == 1:
-        out = torch.empty_strided(
-            out_shape, q_.stride(), dtype=q_.dtype, device=q_.device
-        )
+        # value_head_size == query_head_dim on this path (prefill requires
+        # matching head dims), so empty_like(q_) already has out_shape.
+        out = torch.empty_like(q_)
     else:
         out = q_.new_empty(out_shape)
     # attn (the 2nd output) is always allocated contiguous by every kernel path.

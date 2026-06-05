@@ -11196,6 +11196,58 @@ class TestSDPA(TestCaseMPS):
         # Prefill head dim with S > 8 -> q-stride-preserving prefill path.
         self._test_sdpa_permuted(HS=64)
 
+    def test_sdpa_fused_qkv_unbind(self):
+        # Fused-QKV ViT-style attention: a single Linear projects dim -> 3*dim,
+        # then reshape(B, N, 3, H, Hd) -> permute(2, 0, 3, 1, 4) -> unbind(0)
+        # produces q/k/v that are INTERLEAVED, NON-DENSE views of the fused
+        # buffer. q's seq-dim stride is 3*dim (not dim), yet q.stride(-1) == 1,
+        # so head_dim=32 (>8 Q) takes the prefill path. The prefill C++ kernel
+        # allocates its output with at::empty_like(q), which preserves q's
+        # memory FORMAT but re-densifies the strides (seq stride becomes dim,
+        # not 3*dim). A meta that preserved q's LITERAL strides mispredicted
+        # this and broke inductor's assert_size_stride. Wrapped by
+        # TestSDPAMetaDispatchMode this asserts meta-stride == real-stride for
+        # the fused-qkv layout. See
+        # https://github.com/pytorch/pytorch/issues/177603.
+        torch.manual_seed(1729)
+        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
+            B, N, dim, num_heads = 1, 16, 384, 12
+            head_dim = dim // num_heads
+            x = torch.randn([B, N, dim], dtype=torch.float32, device="mps")
+            w = torch.randn([3 * dim, dim], dtype=torch.float32, device="mps")
+            b = torch.randn([3 * dim], dtype=torch.float32, device="mps")
+            qkv = F.linear(x, w, b).reshape(B, N, 3, num_heads, head_dim)
+            qkv = qkv.permute(2, 0, 3, 1, 4)
+            q, k, v = qkv.unbind(0)
+            # Non-contiguous interleaved views with unit last-dim stride and a
+            # seq-dim stride of 3*dim.
+            self.assertFalse(q.is_contiguous())
+            self.assertEqual(q.stride(-1), 1)
+            self.assertEqual(q.stride(2), 3 * dim)
+
+            q_cpu, k_cpu, v_cpu = q.cpu(), k.cpu(), v.cpu()
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+            y_ref = F.scaled_dot_product_attention(q_cpu, k_cpu, v_cpu, dropout_p=0.0)
+            self._compare_tensors(y.cpu(), y_ref)
+
+            # The TestSDPAMetaDispatchMode wrapper compares against tensors moved
+            # via .to("meta"), which DENSIFIES q's interleaved strides and so
+            # hides the fused-qkv mispredict. inductor instead traces under
+            # FakeTensorMode, which PRESERVES q's non-dense strides, so assert
+            # the meta output stride matches the real op for the actual fake
+            # (stride-preserving) q/k/v. This is the path that broke inductor.
+            from torch._subclasses.fake_tensor import FakeTensorMode
+
+            sdpa_math = torch.ops.aten._scaled_dot_product_attention_math_for_mps.default
+            real_out, _ = sdpa_math(q, k, v, None, 0.0, False, None)
+            with FakeTensorMode() as fake_mode:
+                fq = fake_mode.from_tensor(q)
+                fk = fake_mode.from_tensor(k)
+                fv = fake_mode.from_tensor(v)
+                fake_out, _ = sdpa_math(fq, fk, fv, None, 0.0, False, None)
+            self.assertEqual(real_out.shape, fake_out.shape)
+            self.assertEqual(real_out.stride(), fake_out.stride())
+
     def test_sdpa_no_mask_no_causal_fp32_grad(self):
         self._test_sdpa_no_mask(False, torch.float32, requires_grad=True)
 
