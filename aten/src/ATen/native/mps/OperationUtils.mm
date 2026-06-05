@@ -1584,8 +1584,8 @@ void MetalShaderLibrary::exec_ternary_kernel(TensorIteratorBase& iter, const std
 }
 
 MetalShaderLibrary& MetalShaderLibrary::getBundledLibrary() {
-  static BundledShaderLibrary l;
-  return l;
+  static BundledShaderLibrary* l = new BundledShaderLibrary();
+  return *l;
 }
 
 // DynamicMetalShaderLibrary implementation
