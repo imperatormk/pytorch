@@ -897,22 +897,24 @@ def call_aten_dw(
         w_shape, dtype=out.dtype, device=x_t.device, memory_format=memory_fmt
     )
 
-    torch.ops.aten.convolution_backward.out(
-        out1=None,
-        out2=out,
-        out3=None,
-        grad_output=go_t,
-        input=x_t,
-        weight=dummy_weight,
-        bias_sizes=None,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        transposed=transposed,
-        output_padding=output_padding,
-        groups=groups,
-        output_mask=(False, True, False),
+    # Use the functional .default overload: the .out overload requires real
+    # Tensor out0/out1/out2 and rejects None (raising "tensor does not have a
+    # device"), so it can never be benchmarked. output_mask selects only the
+    # weight gradient (index 1); copy it into the preallocated out buffer.
+    _, dw, _ = torch.ops.aten.convolution_backward.default(
+        go_t,
+        x_t,
+        dummy_weight,
+        None,
+        stride,
+        padding,
+        dilation,
+        transposed,
+        output_padding,
+        groups,
+        (False, True, False),
     )
+    out.copy_(dw)
     return out
 
 
@@ -941,22 +943,22 @@ def call_aten_dx(
         x_shape, dtype=out.dtype, device=go_t.device, memory_format=memory_fmt
     )
 
-    torch.ops.aten.convolution_backward.out(
-        out1=out,
-        out2=None,
-        out3=None,
-        grad_output=go_t,
-        input=dummy_input,
-        weight=w_t,
-        bias_sizes=None,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        transposed=transposed,
-        output_padding=output_padding,
-        groups=groups,
-        output_mask=(True, False, False),
+    # Functional .default overload (see call_aten_dw): output_mask selects only
+    # the input gradient (index 0); copy it into the preallocated out buffer.
+    dx, _, _ = torch.ops.aten.convolution_backward.default(
+        go_t,
+        dummy_input,
+        w_t,
+        None,
+        stride,
+        padding,
+        dilation,
+        transposed,
+        output_padding,
+        groups,
+        (True, False, False),
     )
+    out.copy_(dx)
     return out
 
 
