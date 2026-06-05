@@ -6444,35 +6444,85 @@ def meta__scaled_dot_product_attention_math_for_mps(
     batch_size, num_head, q_size, _ = q_.shape
     _, _, max_seq_length, value_head_size = v_.shape
 
-    def sdpa_general_mps():
-        out_shape = (batch_size, num_head, q_size, value_head_size)
-        # The real MPSGraph kernel preserves q's memory layout for the output
-        # when the output shape matches q's shape (the common square head-dim
-        # case, value_head_size == q head size). It only emits a contiguous
-        # output otherwise. Mirror that so inductor's assert_size_stride agrees;
-        # a contiguous new_empty here diverges from the real transposed strides
-        # for permuted q/k/v and breaks attention models under inductor.
-        if out_shape == tuple(q_.shape) and not q_.is_contiguous():
-            out = torch.empty_strided(
-                out_shape, q_.stride(), dtype=q_.dtype, device=q_.device
-            )
-        else:
-            out = q_.new_empty(out_shape)
-        attn = q_.new_empty((batch_size, num_head, q_size, max_seq_length))
-        if unsqueezed:
-            if query.dim() == 3:
-                out = out.squeeze(0)
-                attn = attn.squeeze(0)
-            else:
-                out_shape = list(query.shape[:-3]) + list(out.shape[1:4])
-                attn_shape = list(query.shape[:-3]) + list(attn.shape[1:4])
-                out = out.view(out_shape)
-                attn = attn.view(attn_shape)
-        return out, attn
+    # The C++ op (aten/src/ATen/native/mps/operations/Attention.mm) dispatches
+    # to one of several kernels whose output layouts differ:
+    #   - sdpa_general_mps (MPSGraph fallback) and the vector fast/2pass kernels
+    #     all materialize a CONTIGUOUS output (at::empty default layout).
+    #   - sdpa_prefill_mps materializes the output via at::empty_like(q), so it
+    #     PRESERVES q's memory layout (e.g. the transposed strides of a permuted
+    #     view). It is selected only for the long-Q path.
+    # The meta must mirror that dispatch so inductor's assert_size_stride agrees
+    # with the real strides for both contiguous and permuted q/k/v. A previous
+    # blanket "preserve q's stride when out_shape == q_shape and q is
+    # non-contiguous" heuristic mispredicted the contiguous general/vector paths
+    # and broke inductor under permuted q/k/v. See
+    # https://github.com/pytorch/pytorch/issues/177603 for context.
+    query_head_dim = q_.shape[3]
+    value_head_dim = v_.shape[3]
+    key_seq_len = k_.shape[2]
 
-    # sdpa_vector_2pass_mps and sdpa_vector_fast_mps are intentionally left out.
-    # See https://github.com/pytorch/pytorch/issues/177603 for additional context.
-    return sdpa_general_mps()
+    # Mirrors prefill_attention_supports_head_dim in Attention.mm.
+    prefill_head_dim_supported = (query_head_dim == value_head_dim) and (
+        query_head_dim in (32, 64, 72, 80, 96, 128, 256)
+    )
+
+    # A mask forces the general MPSGraph path in the C++ op (the prefill and
+    # vector fast kernels are not invoked with a mask), so the output is always
+    # contiguous. Short-circuit before touching the seq-len gates so dynamic
+    # shapes / export do not specialize on the symbolic seq dim. (The masked
+    # general path is also the one exercised by the #177603 export regression.)
+    has_mask = attn_mask is not None
+
+    # Mirrors the vector fast path gate (supports_fast_sdpa). When this path is
+    # taken prefill is skipped, so the output is contiguous regardless.
+    # guard_size_oblivious keeps the symbolic seq-len comparisons from forcing a
+    # static guard under dynamic shapes: they only steer the output stride
+    # (contiguous is the safe default), so specializing on seq is wrong.
+    from torch.fx.experimental.symbolic_shapes import guard_size_oblivious
+
+    sdpa_vector_supported_head_dim = (query_head_dim == value_head_dim) and (
+        query_head_dim in (64, 96, 128, 256)
+    )
+    supports_fast_sdpa = (
+        (not has_mask)
+        and sdpa_vector_supported_head_dim
+        and guard_size_oblivious(q_size <= 8)
+        and guard_size_oblivious(q_size <= key_seq_len)
+    )
+
+    # Mirrors prefill_q_long_enough (qL > 8) and the remaining gates. dtype is
+    # always float/half/bfloat here; dropout_p must be 0 for MPS SDPA.
+    supports_prefill = (
+        (not has_mask)
+        and (not supports_fast_sdpa)
+        and prefill_head_dim_supported
+        and guard_size_oblivious(q_size > 8)
+        and guard_size_oblivious(key_seq_len > 0)
+    )
+
+    # The prefill kernel runs on q after a stride(-1) == 1 contiguity coercion:
+    # if q's last dim is already unit-stride (true for transposed views) it is
+    # used as-is and the output preserves q's strides; otherwise q is made
+    # contiguous first and the output is contiguous too.
+    out_shape = (batch_size, num_head, q_size, value_head_size)
+    if supports_prefill and q_.stride(-1) == 1:
+        out = torch.empty_strided(
+            out_shape, q_.stride(), dtype=q_.dtype, device=q_.device
+        )
+    else:
+        out = q_.new_empty(out_shape)
+    # attn (the 2nd output) is always allocated contiguous by every kernel path.
+    attn = q_.new_empty((batch_size, num_head, q_size, max_seq_length))
+    if unsqueezed:
+        if query.dim() == 3:
+            out = out.squeeze(0)
+            attn = attn.squeeze(0)
+        else:
+            out_shape = list(query.shape[:-3]) + list(out.shape[1:4])
+            attn_shape = list(query.shape[:-3]) + list(attn.shape[1:4])
+            out = out.view(out_shape)
+            attn = attn.view(attn_shape)
+    return out, attn
 
 
 @register_meta([aten._scaled_dot_product_efficient_attention])

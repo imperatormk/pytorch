@@ -11163,6 +11163,39 @@ class TestSDPA(TestCaseMPS):
     def test_sdpa_no_mask_causal_fp16_L7_S17_NH23_HS121(self):
         self._test_sdpa_no_mask(True, torch.float16, 7, 17, 23, 121)
 
+    def _test_sdpa_permuted(self, HS: int, dtype=torch.float32):
+        # Run SDPA with permuted (transposed, non-contiguous) q/k/v. Wrapped by
+        # TestSDPAMetaDispatchMode (see create_sdpa_meta_test) this asserts the
+        # meta kernel's output stride matches the real op for the path selected
+        # by HS: a small HS (e.g. 2) hits the general/contiguous MPSGraph path
+        # (contiguous output), while a prefill HS (e.g. 64) with a long enough Q
+        # hits sdpa_prefill_mps (q-stride-preserving output). A prior meta
+        # heuristic always preserved q's stride and so mispredicted the general
+        # path, breaking inductor under permuted q/k/v. See
+        # https://github.com/pytorch/pytorch/issues/177603.
+        torch.manual_seed(1729)
+        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
+            # Build (B, S, NH, HS) and transpose(1, 2) -> (B, NH, S, HS) views
+            # that are NOT contiguous, exactly like an attention block does.
+            B, NH, S = 4, 2, 16
+            q = torch.randn([B, S, NH, HS], dtype=dtype, device="mps").transpose(1, 2)
+            k = torch.randn([B, S, NH, HS], dtype=dtype, device="mps").transpose(1, 2)
+            v = torch.randn([B, S, NH, HS], dtype=dtype, device="mps").transpose(1, 2)
+            self.assertFalse(q.is_contiguous())
+
+            q_cpu, k_cpu, v_cpu = q.cpu(), k.cpu(), v.cpu()
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+            y_ref = F.scaled_dot_product_attention(q_cpu, k_cpu, v_cpu, dropout_p=0.0)
+            self._compare_tensors(y.cpu(), y_ref)
+
+    def test_sdpa_permuted_general_path(self):
+        # Small head dim -> general/contiguous MPSGraph path.
+        self._test_sdpa_permuted(HS=2)
+
+    def test_sdpa_permuted_prefill_path(self):
+        # Prefill head dim with S > 8 -> q-stride-preserving prefill path.
+        self._test_sdpa_permuted(HS=64)
+
     def test_sdpa_no_mask_no_causal_fp32_grad(self):
         self._test_sdpa_no_mask(False, torch.float32, requires_grad=True)
 
