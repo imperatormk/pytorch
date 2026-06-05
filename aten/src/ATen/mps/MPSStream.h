@@ -117,6 +117,42 @@ class TORCH_API MPSStream {
   MTLBuffer_t getErrorBuffer();
   void checkLastError();
 
+  // Timing pin: while pinned, involuntary commits (adaptive / watermark driven
+  // and commitAndContinue) are suppressed so that the current command buffer is
+  // not split between a start and end timing event. This guarantees both events
+  // of an inductor benchmark pair land on the same command buffer, so their GPU
+  // timestamps cannot invert under concurrent GPU load. Explicit COMMIT and
+  // COMMIT_AND_WAIT (the benchmark's own end-of-pair synchronize) still commit.
+  void pinTiming() {
+    ++_timingPinned;
+  }
+  void unpinTiming() {
+    if (_timingPinned > 0) {
+      --_timingPinned;
+    }
+  }
+  bool isTimingPinned() const {
+    return _timingPinned > 0;
+  }
+  // Brackets a timed event pair. The first timing record opens the region and
+  // pins; this returns true. The second timing record returns false to signal
+  // the caller it must unpin (via unpinTiming()) AFTER the end signal is encoded
+  // onto the shared command buffer. Driven from MPSEvent::recordLocked.
+  bool openOrCloseTimedPair() {
+    _inTimedPair = !_inTimedPair;
+    if (_inTimedPair) {
+      pinTiming();
+      return true;
+    }
+    return false;
+  }
+  // Clears any open timed region. Used as an exception-safety backstop on a full
+  // GPU drain so an interrupted pair cannot leak commit suppression.
+  void resetTimingPin() {
+    _timingPinned = 0;
+    _inTimedPair = false;
+  }
+
  private:
   Stream _stream;
   MTLCommandQueue_t _commandQueue = nil;
@@ -128,6 +164,11 @@ class TORCH_API MPSStream {
   dispatch_queue_t _serialQueue = nullptr;
   // CommitAndContinue is enabled by default
   bool _enableCommitAndContinue = true;
+  // >0 while a timed region (start..end event pair) is open; suppresses
+  // involuntary command buffer commits so the pair stays on one buffer.
+  int _timingPinned = 0;
+  // false between pairs, true after a start timing record and before its end.
+  bool _inTimedPair = false;
   // Buffer that contains last raised error
   MTLBuffer_t _errorBuffer = nil;
 

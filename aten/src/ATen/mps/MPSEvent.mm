@@ -21,6 +21,15 @@ MPSEvent::~MPSEvent() {
 void MPSEvent::recordLocked(bool syncEvent) {
   // active encoders must end before encoding or waiting
   m_stream->endKernelCoalescing();
+  // Timing pin: a start timing record opens the pinned region (so involuntary
+  // commits triggered by the kernel's allocations between start and end cannot
+  // split the command buffer); the matching end timing record closes it after
+  // the end signal is encoded below. This guarantees the start and end events
+  // share one command buffer, so their GPU timestamps cannot invert.
+  bool openedTimedPair = false;
+  if (m_enable_timing) {
+    openedTimedPair = m_stream->openOrCloseTimedPair();
+  }
   ++m_signalCounter;
   id<MTLCommandBuffer> commandBuffer = m_stream->commandBuffer();
   if (m_enable_timing) {
@@ -47,6 +56,15 @@ void MPSEvent::recordLocked(bool syncEvent) {
     }];
   }
   [commandBuffer encodeSignalEvent:m_event value:m_signalCounter];
+  // Close the pinned region AFTER the end signal is encoded onto the shared
+  // buffer, so the buffer is never committed before the end signal lands on it.
+  // openedTimedPair is true on the start record (region just opened, keep it
+  // pinned) and false on the end record (unpin now). This is reliable:
+  // recordLocked always runs to completion for both events of a pair, and the
+  // pin counter clamps at zero so a stray unpin can never leak suppression.
+  if (m_enable_timing && !openedTimedPair) {
+    m_stream->unpinTiming();
+  }
   if (syncEvent) {
     m_stream->synchronize(SyncType::COMMIT);
   }
