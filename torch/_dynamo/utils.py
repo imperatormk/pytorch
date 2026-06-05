@@ -2663,6 +2663,11 @@ def preserve_rng_state() -> Generator[None, None, None]:
             cuda_rng_state = torch.clone(torch.cuda.get_rng_state())
         if torch.xpu.is_available():
             xpu_rng_state = torch.clone(torch.xpu.get_rng_state())
+        # MPS is counter-based too; without preserving it here, autotune-time
+        # rand_strided draws on device="mps" permanently shift the default MPS
+        # RNG stream and desync seeded user code (e.g. randn ordering).
+        if torch.backends.mps.is_available():
+            mps_rng_state = torch.clone(torch.mps.get_rng_state())
     try:
         yield
     finally:
@@ -2672,6 +2677,8 @@ def preserve_rng_state() -> Generator[None, None, None]:
                 torch.cuda.set_rng_state(cuda_rng_state)  # type: ignore[possibly-undefined]
             if torch.xpu.is_available():
                 torch.xpu.set_rng_state(xpu_rng_state)  # type: ignore[possibly-undefined]
+            if torch.backends.mps.is_available():
+                torch.mps.set_rng_state(mps_rng_state)  # type: ignore[possibly-undefined]
 
 
 def is_jit_model(
