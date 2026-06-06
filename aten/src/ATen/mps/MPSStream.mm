@@ -208,6 +208,16 @@ void MPSStream::copy(id<MTLBuffer> srcBuffer,
       // profilerId has a value only if copy profiling is enabled
       if (profileId) {
         getMPSProfiler().endProfileCopy(profileId, syncType);
+      } else if (syncType == SyncType::COMMIT && isTimingPinned()) {
+        // A non-blocking copy issues SyncType::COMMIT. If a timed region is
+        // pinned, synchronize() would SUPPRESS that commit to keep the timing
+        // pair on one buffer, leaving the blit encoded but uncommitted. The
+        // copy's source/destination buffer can then be freed (tensor dealloc)
+        // before the blit ever runs, so the deferred GPU blit reads a dangling
+        // buffer and crashes inside MPSStream::copy. A copy is not the compute
+        // kernel being timed, so commit it now: memory safety outweighs a rare
+        // timing split when a copy lands mid-benchmark.
+        commit();
       } else {
         synchronize(syncType);
       }

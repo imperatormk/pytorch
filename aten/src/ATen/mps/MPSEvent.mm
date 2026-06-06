@@ -44,15 +44,22 @@ void MPSEvent::recordLocked(bool syncEvent) {
     // reader never observes a stale time. Fall back to the CPU clock only if the
     // GPU timestamp is unavailable (== 0).
     notifyLocked(^(id<MTLSharedEvent>, uint64_t) {});
+    // Capture the shared CPU-sync state by value (a strong shared_ptr ref) so
+    // this handler, which fires asynchronously on a GPU dispatch thread, can run
+    // safely even after this MPSEvent has been destroyed or recycled by the
+    // pool. Writing through `this` here would be a use-after-free.
+    auto cpuSync = m_cpu_sync;
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
       double gpuStart = [cb GPUStartTime];
       double gpuEnd = [cb GPUEndTime];
       uint64_t cpuNow = getTime();
-      m_start_time =
+      std::lock_guard<std::mutex> lock(cpuSync->mutex);
+      cpuSync->start_time =
           gpuStart > 0.0 ? static_cast<uint64_t>(gpuStart * 1e9) : cpuNow;
-      m_completion_time =
+      cpuSync->completion_time =
           gpuEnd > 0.0 ? static_cast<uint64_t>(gpuEnd * 1e9) : cpuNow;
-      notifyCpuSync();
+      cpuSync->completed = true;
+      cpuSync->cv.notify_one();
     }];
   }
   [commandBuffer encodeSignalEvent:m_event value:m_signalCounter];
@@ -136,21 +143,28 @@ bool MPSEvent::notify(bool needsLock, MTLSharedEventNotificationBlock block) {
 }
 
 void MPSEvent::notifyCpuSync() {
-  std::lock_guard<std::mutex> lock(m_cpu_sync_mutex);
-  m_cpu_sync_completed = true;
-  m_cpu_sync_cv.notify_one();
+  std::lock_guard<std::mutex> lock(m_cpu_sync->mutex);
+  m_cpu_sync->completed = true;
+  m_cpu_sync->cv.notify_one();
 }
 
 void MPSEvent::waitForCpuSync() {
-  std::unique_lock<std::mutex> lock(m_cpu_sync_mutex);
-  m_cpu_sync_cv.wait(lock, [&] { return m_cpu_sync_completed; });
-  m_cpu_sync_completed = false;
+  auto cpuSync = m_cpu_sync;
+  std::unique_lock<std::mutex> lock(cpuSync->mutex);
+  cpuSync->cv.wait(lock, [&] { return cpuSync->completed; });
+  cpuSync->completed = false;
 }
 
 bool MPSEvent::synchronize() {
+  // Capture the shared CPU-sync state so the shared-event notify block (which
+  // runs on a listener thread) can write the completion time even if this
+  // MPSEvent is destroyed before the block fires.
+  auto cpuSync = m_cpu_sync;
   bool scheduledNotify = notifyLocked(^(id<MTLSharedEvent>, uint64_t) {
-    m_completion_time = getTime();
-    notifyCpuSync();
+    std::lock_guard<std::mutex> lock(cpuSync->mutex);
+    cpuSync->completion_time = getTime();
+    cpuSync->completed = true;
+    cpuSync->cv.notify_one();
   });
 
   if (scheduledNotify) {
@@ -171,11 +185,12 @@ void MPSEvent::reset(MPSStream* stream, bool enable_timing) {
     m_event.signaledValue = 0;
     m_stream = stream;
   }
-  // reset record time
-  m_completion_time = 0;
-  m_start_time = 0;
+  // Allocate fresh CPU-sync state. Any completion handler still outstanding from
+  // a previous recording keeps a strong ref to the OLD state object and writes
+  // there harmlessly, so the recycled event cannot be corrupted by a late
+  // handler. Resetting also zeroes the timestamps for the new recording.
+  m_cpu_sync = std::make_shared<MPSEventCpuSync>();
   m_enable_timing = enable_timing;
-  m_cpu_sync_completed = false;
 };
 
 //-----------------------------------------------------------------
