@@ -7100,7 +7100,11 @@ class CommonTemplate:
 
         for dtype in dtypes:
             for fn, name in cases:
-                with self.subTest(dtype=dtype, op=name):
+                # Pass dtype as a string: a raw torch.dtype in the subTest id is
+                # not picklable by pytest-xdist's execnet channel (DumpError:
+                # can't serialize <class 'torch.dtype'>), which fails the test
+                # under -n parallel even when the assertions pass.
+                with self.subTest(dtype=str(dtype), op=name):
                     x = torch.randn(
                         4, dtype=dtype, device=self.device, requires_grad=True
                     )
