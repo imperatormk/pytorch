@@ -758,11 +758,22 @@ static void argmax_argmin_out_mps(const Tensor& input_t,
 
   int64_t dim_ = -1;
 
+  // In the no-dim (full reduction) case the input is flattened to a 1-D shape
+  // before being fed to the graph. A non-contiguous input (e.g. a transposed,
+  // permuted or sliced view) cannot be reshaped to 1-D as a view, so the
+  // Placeholder's reshape throws "view size is not compatible". Materialize a
+  // contiguous copy here so the flatten always succeeds; this matches the CPU
+  // and CUDA behavior, which flatten via reshape().
+  Tensor input_c = input_t;
+  if (!dim.has_value() && !input_t.is_contiguous()) {
+    input_c = input_t.contiguous();
+  }
+
   if (dim.has_value()) {
-    dim_ = maybe_wrap_dim(dim.value(), input_t.dim());
-    zero_numel_check_dims(input_t, dim_, reduction_type == MPSReductionType::MAX ? "argmax()" : "argmin()");
+    dim_ = maybe_wrap_dim(dim.value(), input_c.dim());
+    zero_numel_check_dims(input_c, dim_, reduction_type == MPSReductionType::MAX ? "argmax()" : "argmin()");
   } else {
-    TORCH_CHECK_INDEX(input_t.numel() != 0,
+    TORCH_CHECK_INDEX(input_c.numel() != 0,
                       reduction_type == MPSReductionType::MAX ? "argmax()" : "argmin()",
                       ": Expected reduction dim to be specified for input.numel() == 0.");
     // Since input will be flattened, take argmax or argmin along 0'th dimension
@@ -771,7 +782,7 @@ static void argmax_argmin_out_mps(const Tensor& input_t,
 
   // Calculate the output shape according to keepdim=True
   // If there is no dim argument, the input shape is flattened
-  IntArrayRef input_shape = input_t.sizes();
+  IntArrayRef input_shape = input_c.sizes();
   int64_t num_input_dims = input_shape.size();
   NSMutableArray<NSNumber*>* apparent_in_shape = nil;
   NSMutableArray<NSNumber*>* apparent_out_shape = nil;
@@ -795,15 +806,15 @@ static void argmax_argmin_out_mps(const Tensor& input_t,
   }
 
   if (!apparent_in_shape) {
-    apparent_in_shape = [getMPSShape(input_t.sizes()) mutableCopy];
+    apparent_in_shape = [getMPSShape(input_c.sizes()) mutableCopy];
   }
 
   @autoreleasepool {
     NSString* ns_key = [[apparent_in_shape valueForKey:@"description"] componentsJoinedByString:@","];
-    std::string key = func_name + ":" + std::to_string(dim_) + ":" + getTensorsStringKey(input_t) + ":" +
+    std::string key = func_name + ":" + std::to_string(dim_) + ":" + getTensorsStringKey(input_c) + ":" +
         std::string([ns_key UTF8String]);
     auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      auto inputScalarType = input_t.scalar_type();
+      auto inputScalarType = input_c.scalar_type();
       MPSGraphTensor* inputTensor =
           mpsGraphRankedPlaceHolder(mpsGraph, getMPSDataType(inputScalarType), apparent_in_shape);
       MPSGraphTensor* argreduceOutTensor = nil;
@@ -834,7 +845,7 @@ static void argmax_argmin_out_mps(const Tensor& input_t,
       newCachedGraph->outputTensor_ = outputClampedTensor;
     });
 
-    auto inputPlaceholder = Placeholder(cachedGraph->inputTensor_, input_t, apparent_in_shape);
+    auto inputPlaceholder = Placeholder(cachedGraph->inputTensor_, input_c, apparent_in_shape);
     auto outputPlaceholder = Placeholder(cachedGraph->outputTensor_, output_t, apparent_out_shape);
 
     auto feeds = dictionaryFromPlaceholders(inputPlaceholder);
