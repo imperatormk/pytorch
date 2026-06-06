@@ -1102,7 +1102,7 @@ def is_triton_backend(device):
     if device_type == "cpu":
         return config.cpu_backend == "triton"
     if device_type == "mps":
-        return False
+        return config.mps_backend == "triton"
     return config.cuda_backend == "triton"
 
 
@@ -17292,6 +17292,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     )
     @skip_if_halide
     @requires_gpu_and_triton
+    @xfail_if_mps_unimplemented  # .item() yields an fp64 scalar arg; AppleGPU has no fp64
     @torch._dynamo.config.patch(capture_scalar_outputs=True)
     def test_non_blocking_d2h_event_sync(self):
         def f(x):
@@ -17724,6 +17725,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
     @skip_if_halide
     @requires_gpu_and_triton
+    @xfail_if_mps_unimplemented  # .item() yields an fp64 scalar arg; AppleGPU has no fp64
     def test_unbacked_float_item(self):
         def fn(x, max_val):
             return torch.clamp(x, 0, max_val.item())

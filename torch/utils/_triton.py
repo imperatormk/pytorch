@@ -202,6 +202,7 @@ def has_triton() -> bool:
         "xpu": _return_true,
         "cpu": cpu_extra_check,
         "mtia": _return_true,
+        "mps": _return_true,
     }
 
     def is_device_compatible_with_triton() -> bool:
