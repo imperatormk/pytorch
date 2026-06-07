@@ -244,8 +244,12 @@ id_t MPSEventPool::acquireEvent(bool enable_timing) {
 
 void MPSEventPool::releaseEvent(id_t event_id) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  TORCH_CHECK(m_in_use_events.count(event_id) > 0, "Invalid Event ID: ", event_id);
-  // returns the event back to the MPSEventPool
+  // releaseEvent runs from THPEvent_dealloc (a Python tp_dealloc, hence an
+  // implicitly-noexcept destructor context), so it must never throw: a thrown
+  // c10::Error here escapes the destructor and calls std::terminate. A stale or
+  // double release (the event was already returned to the pool, or the pool was
+  // cleared) is benign, so treat a missing id as a no-op instead of a hard
+  // check. erase() already handles the not-present case.
   m_in_use_events.erase(event_id);
 }
 

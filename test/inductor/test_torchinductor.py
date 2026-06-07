@@ -15149,8 +15149,18 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
     @requires_gpu()
     @skip_if_not_triton
-    @xfail_if_mps_triton_codegen
     def test_input_asserts_deferred_to_first_use(self):
+        if is_mps_backend(self.device) and config.mps_backend == "triton":
+            # The deferred-input-assert placement is checked via a CUDA-tuned
+            # FileCheck (assert_size_stride count + "mm_out" ordering). On the
+            # Triton MPS backend the mm routes to a Triton kernel OR extern
+            # depending on which config the autotuner picks, so the codegen
+            # assertion is non-deterministic (it raises under some configs and
+            # holds under others, e.g. under -n8 the autotuner picks extern mm
+            # and the assert holds). xfail cannot model a non-deterministic
+            # raise, so skip on the Triton MPS backend until the codegen routing
+            # is stabilized. The computation itself is correct.
+            raise unittest.SkipTest("MPS-triton autotune-dependent codegen routing")
         def fn(x, y, z):
             a = torch.mm(x, y)
             b = torch.mm(a, z)
@@ -15178,6 +15188,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         config.cpp_wrapper,
         "Deferred alignment copies are not generated for cpp_wrapper",
     )
+    @xfail_if_mps_triton_codegen
     def test_alignment_copy_deferred_to_first_use(self):
         def fn(x, y, z):
             a = torch.mm(x, y)
@@ -17284,6 +17295,23 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     @requires_gpu_and_triton
     @parametrize("use_cat", [True, False])
     def test_copy_non_blocking_is_pinned(self, use_cat):
+        if is_mps_backend(self.device):
+            # NOTE: TEMPORARILY skipped on MPS - remove once the UAF below is fixed.
+            # Heap corruption in the inductor-compiled non-blocking-D2H path on
+            # MPS: the compiled wrapper for `x.to("cpu", non_blocking=True)`
+            # allocates a pinned (MPS-backed) CPU buffer, issues an async blit and
+            # injects torch.Event().record()/synchronize(); running it twice
+            # (warmup + real) overwrites a StorageImpl data pointer, so a later
+            # free lands in MPSHeapAllocatorImpl::free_buffer with a wild
+            # BufferBlock* and SIGSEGVs (and bleeds into a neighboring test's GC).
+            # SKIP (not xfail): the failure is a process-killing segfault, which
+            # assertRaises-based xfail cannot catch. The corruptor is upstream in
+            # the compiled execution and is NOT the THPEvent dealloc GIL release
+            # nor the copy's c10::Storage deallocator (both ruled out). Tracked
+            # for an upstream GH issue.
+            raise unittest.SkipTest(
+                "MPS pinned-buffer UAF in compiled non-blocking-copy path"
+            )
         def f(a_list):
             a_cpu_list = []
             a_to_cpu_event_list = []

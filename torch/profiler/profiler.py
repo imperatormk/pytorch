@@ -248,6 +248,9 @@ class _KinetoProfile:
         elif ProfilerActivity.HPU in self.activities:
             # pyrefly: ignore [bad-assignment]
             self.use_device = "hpu"
+        elif ProfilerActivity.MPS in self.activities:
+            # pyrefly: ignore [bad-assignment]
+            self.use_device = "mps"
         elif ProfilerActivity.PrivateUse1 in self.activities:
             # pyrefly: ignore [bad-assignment]
             self.use_device = _get_privateuse1_backend_name()

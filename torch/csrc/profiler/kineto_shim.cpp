@@ -368,6 +368,12 @@ void prepareTrace(
   if (activities.count(torch::autograd::profiler::ActivityType::HPU)) {
     insertActivities(torch::autograd::profiler::ActivityType::HPU, kHpuTypes);
   }
+  if (activities.count(torch::autograd::profiler::ActivityType::MPS)) {
+    // MPS has no dedicated kineto device-trace backend; its kernels are
+    // captured on the CPU side, so requesting MPS profiling collects the same
+    // CPU op activities (the host-side dispatch of the Metal work).
+    insertActivities(torch::autograd::profiler::ActivityType::CPU, kCpuTypes);
+  }
   if (activities.count(torch::autograd::profiler::ActivityType::CUDA)) {
     insertActivities(torch::autograd::profiler::ActivityType::CUDA, kCudaTypes);
     if (config.enable_cuda_sync_events || get_cuda_sync_enabled()) {
