@@ -6466,11 +6466,11 @@ def meta__scaled_dot_product_attention_math_for_mps(
         query_head_dim in (32, 64, 72, 80, 96, 128, 256)
     )
 
-    # A mask forces the general MPSGraph path in the C++ op (the prefill and
-    # vector fast kernels are not invoked with a mask), so the output is always
-    # contiguous. Short-circuit before touching the seq-len gates so dynamic
-    # shapes / export do not specialize on the symbolic seq dim. (The masked
-    # general path is also the one exercised by the #177603 export regression.)
+    # A mask does NOT by itself force the contiguous general path: the prefill
+    # kernel accepts a dtype-compatible mask (see prefill_mask_compatible below,
+    # mirroring Attention.mm), and masked-prefill allocates empty_like(q) which
+    # preserves q's (possibly transposed) layout. Only the vector fast path is
+    # mask-gated here. (#177603 covers the export regression on the general path.)
     has_mask = attn_mask is not None
 
     # Mirrors the vector fast path gate (supports_fast_sdpa). When this path is
@@ -6492,8 +6492,16 @@ def meta__scaled_dot_product_attention_math_for_mps(
 
     # Mirrors prefill_q_long_enough (qL > 8) and the remaining gates. dtype is
     # always float/half/bfloat here; dropout_p must be 0 for MPS SDPA.
+    # Mirrors prefill_mask_compatible in Attention.mm: the prefill kernel DOES
+    # run with a mask as long as the mask is bool or matches q's dtype, so prefill
+    # is NOT gated on (not has_mask) -- the C++ op takes masked-prefill (which
+    # allocates empty_like(q), preserving q's layout) rather than the contiguous
+    # general path. Gating on has_mask here mispredicts that as contiguous.
+    prefill_mask_compatible = (not has_mask) or (
+        attn_mask.dtype == torch.bool or attn_mask.dtype == query.dtype
+    )
     supports_prefill = (
-        (not has_mask)
+        prefill_mask_compatible
         and (not supports_fast_sdpa)
         and prefill_head_dim_supported
         and guard_size_oblivious(q_size > 8)
