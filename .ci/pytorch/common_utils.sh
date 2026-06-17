@@ -317,7 +317,12 @@ function install_spmd_types() {
 
 function install_flash_attn_cute() {
   echo "Installing FlashAttention 4 from PyPI..."
-  pip_install flash-attn-4==4.0.0b15
+  # b17 adds aux_scalars; CUDA 13 wheels are behind the cu13 extra.
+  if [[ "${DESIRED_CUDA:-}" == 13.* || "${CUDA_VERSION:-}" == 13.* || "${BUILD_ENVIRONMENT:-}" == *cuda13* ]]; then
+    pip_install "flash-attn-4[cu13]==4.0.0b17"
+  else
+    pip_install flash-attn-4==4.0.0b17
+  fi
   echo "FlashAttention 4 installation complete."
 }
 
@@ -331,8 +336,17 @@ function install_cutlass_dsl() {
   fi
 
   echo "Installing NVIDIA CUTLASS DSL from PyPI..."
-  pip_install nvidia-cutlass-dsl
+  # Pin to a version accepted by torch._native's cutedsl version gate
+  # (_CUTEDSL_REQUIRED_VERSIONS); apache-tvm-ffi is a required runtime dep of
+  # the CuTeDSL op overrides but is not pulled in by nvidia-cutlass-dsl.
+  pip_install nvidia-cutlass-dsl==4.5.2 apache-tvm-ffi==0.1.11
   echo "NVIDIA CUTLASS DSL installation complete."
+}
+
+function install_nvmath() {
+  echo "Installing nvmath-python from PyPI..."
+  pip_install nvmath-python
+  echo "nvmath-python installation complete."
 }
 
 function install_cutlass_api() {

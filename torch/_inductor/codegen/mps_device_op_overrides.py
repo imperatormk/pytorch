@@ -8,12 +8,14 @@ class MPSDeviceOpOverrides(DeviceOpOverrides):
         return f"{name} = lambda device_idx: None  # MPS has no raw stream"
 
     def device_guard(self, device_idx: int) -> str:
-        assert device_idx == 0
+        if device_idx != 0:
+            raise AssertionError(f"expected device_idx == 0, got {device_idx}")
         return "torch._ops.contextlib.nullcontext()"
 
     def set_device(self, device_idx: int) -> str:
-        assert device_idx == 0
-        return "pass  # MPS single device"
+        if device_idx != 0:
+            raise AssertionError(f"expected device_idx == 0, got {device_idx}")
+        return "pass  # MPS set device"
 
     def synchronize(self) -> str:
         return "torch.mps.synchronize()"
