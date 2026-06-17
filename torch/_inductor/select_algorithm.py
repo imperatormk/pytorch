@@ -104,6 +104,17 @@ log = logging.getLogger(__name__)
 
 # correctness checks struggle with fp16/tf32
 VERIFY: dict[str, Any] = {}
+# TORCHINDUCTOR_VERIFY_ALL_CHOICES=1 verifies EVERY autotuned choice against the
+# reference (choices[0]) during autotuning, not just the winning config. The
+# winner is timing-dependent, so a buggy config is otherwise only checked when
+# the autotuner happens to pick it -> flaky. This makes every emitted config
+# correctness-checked deterministically. Tolerance via *_RTOL/*_ATOL (fp16/tf32
+# need slack, hence off by default). Backend bring-up / regression gate.
+if os.environ.get("TORCHINDUCTOR_VERIFY_ALL_CHOICES") == "1":
+    VERIFY = {
+        "rtol": float(os.environ.get("TORCHINDUCTOR_VERIFY_RTOL", "1e-2")),
+        "atol": float(os.environ.get("TORCHINDUCTOR_VERIFY_ATOL", "1e-2")),
+    }
 PRINT_AUTOTUNE = True
 DEBUG = False
 
@@ -4430,8 +4441,22 @@ class AlgorithmSelectorCache(PersistentCache):
         def precompile_with_captured_stdout(choice) -> tuple[None, int]:
             log.debug("Precompiling choice with captured stdout: %s", choice)
             start_ns = time.time_ns()
-            with restore_stdout_stderr():
-                choice.precompile()
+            try:
+                with restore_stdout_stderr():
+                    choice.precompile()
+            except BaseException:
+                import traceback as _tb, threading as _th, time as _t, os as _os
+                ts = _t.strftime("%Y%m%d_%H%M%S") + f"_{_t.time_ns() % 1_000_000:06d}"
+                path = f"/tmp/precompile_crash_{ts}_t{_th.get_ident()}_p{_os.getpid()}.txt"
+                try:
+                    with open(path, "w") as _f:
+                        _f.write(f"choice={choice}\n\n")
+                        _tb.print_exc(file=_f)
+                except Exception:
+                    pass
+                _tb.print_exc()
+                print(f"[PRECOMPILE FAILED] choice={choice} -> stack in {path}", flush=True)
+                raise
             elapsed_ns = time.time_ns() - start_ns
             # Return tuple as triton async compile (_worker_compile_triton)
             # returns tuple[CachingAutotuner, int]
@@ -4753,7 +4778,15 @@ class AlgorithmSelectorCache(PersistentCache):
             device_interface.synchronize()  # shake out any CUDA errors
 
         if VERIFY and autotune_args.expected is not None:
-            autotune_args.verify(**VERIFY)
+            # __stderr__ bypasses pytest's per-test --capture (which discards
+            # output from passing tests) and xdist worker capture, so every
+            # verified config is visible live, pass or fail.
+            try:
+                autotune_args.verify(**VERIFY)
+            except Exception as e:
+                print(f"VERIFY FAIL: {choice}\n{e}", file=sys.__stderr__, flush=True)
+                raise
+            print(f"VERIFY ok: {choice}", file=sys.__stderr__, flush=True)
         return result
 
     @classmethod

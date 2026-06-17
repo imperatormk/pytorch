@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, TypedDict
 
 import torch
@@ -622,7 +623,12 @@ def convolution(
     # On MPS the Triton conv templates frequently exceed the 32KB threadgroup
     # budget and are rejected at compile time. Keep the aten fallback so the
     # choice set is never all-OOR (which would raise NoValidChoicesError).
-    keep_aten_fallback = device_type == "mps"
+    # TORCHINDUCTOR_MPS_FORCE_TRITON_CONV=1 drops it so the Triton conv kernel is
+    # always exercised (testing the backend; may raise NoValidChoicesError when
+    # every Triton config is OOR).
+    keep_aten_fallback = device_type == "mps" and (
+        os.environ.get("TORCHINDUCTOR_MPS_FORCE_TRITON_CONV") != "1"
+    )
 
     choices = []
     if torch._inductor.utils._use_conv_autotune_backend("ATEN") or keep_aten_fallback:
@@ -1194,7 +1200,10 @@ def convolution_backward_lowering(
     # budget and are rejected at compile time, leaving an all-OOR choice set.
     # Keep the aten fallback alongside any Triton choices so autotuning can never
     # end up with zero valid choices (NoValidChoicesError).
-    keep_aten_fallback = device_type == "mps"
+    # TORCHINDUCTOR_MPS_FORCE_TRITON_CONV=1 drops it to always exercise Triton.
+    keep_aten_fallback = device_type == "mps" and (
+        os.environ.get("TORCHINDUCTOR_MPS_FORCE_TRITON_CONV") != "1"
+    )
 
     if output_mask[1]:
         if (

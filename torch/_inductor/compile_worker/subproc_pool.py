@@ -278,6 +278,18 @@ class SubprocPool:
             if msg_header != MsgHeader.JOB:
                 # read_pipe returned None or got exception
                 if self.running:
+                    try:
+                        rc = self.process.poll()
+                        if rc is None:
+                            self.process.wait(timeout=2)
+                            rc = self.process.returncode
+                        sig = (-rc) if (rc is not None and rc < 0) else None
+                        import signal as _sig
+                        signame = _sig.Signals(sig).name if sig else "n/a"
+                        print(f"[SUBPROC_DEBUG_EXIT] worker pid={self.process.pid} "
+                              f"returncode={rc} signal={sig}({signame})", flush=True)
+                    except Exception as _e:
+                        print(f"[SUBPROC_DEBUG_EXIT] poll failed: {_e}", flush=True)
                     log.warning("SubprocPool unclean exit")
                     self.running = False
                     self.running_waitcounter.__exit__()

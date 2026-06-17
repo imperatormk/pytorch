@@ -40,6 +40,19 @@ def _async_compile_initializer(orig_ppid: int) -> None:
     # Install a crash handler to print out the stacktrace for SEGV
     torch._C._initCrashHandler()
 
+    # DEBUG (always on): dump a native+python faulthandler traceback to a
+    # per-worker file on any fatal signal, so a segfault/abort inside a forked
+    # compile worker (whose stderr the parent swallows) is recoverable. Catches
+    # SIGSEGV/SIGABRT/SIGFPE/SIGBUS (NOT SIGKILL, which is uncatchable).
+    _dir = os.environ.get("INDUCTOR_WORKER_FAULT_DIR", "/tmp/inductor_worker_faults")
+    try:
+        import faulthandler
+        os.makedirs(_dir, exist_ok=True)
+        _fh = open(os.path.join(_dir, f"fault_{os.getpid()}.txt"), "w")
+        faulthandler.enable(file=_fh, all_threads=True)
+    except OSError:
+        pass
+
     # Set a bit to distinguish async_compile subprocesses from the toplevel process.
     global _IN_TOPLEVEL_PROCESS
     _IN_TOPLEVEL_PROCESS = False

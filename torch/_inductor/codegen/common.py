@@ -585,6 +585,8 @@ def init_backend_registration() -> None:
             "metal": MetalScheduling,
             "triton": TritonScheduling,
         }
+        if os.environ.get("MPS_FORCE_TRITON") == "1":
+            mps_backends["metal"] = TritonScheduling
         register_backend_for_device(
             "mps",
             lambda scheduling: mps_backends[config.mps_backend](scheduling),

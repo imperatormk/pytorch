@@ -200,6 +200,18 @@ class TuningProcess:
             raise
         except EOFError:
             # The subprocess crashed
+            try:
+                rc = self.process.poll()
+                if rc is None:
+                    self.process.wait(timeout=2)
+                    rc = self.process.returncode
+                sig = (-rc) if (rc is not None and rc < 0) else None
+                import signal as _sig
+                signame = _sig.Signals(sig).name if sig else "n/a"
+                print(f"[AUTOTUNE_DEBUG_EXIT] pid={self.process.pid} "
+                      f"returncode={rc} signal={sig}({signame})", flush=True)
+            except Exception as _e:
+                print(f"[AUTOTUNE_DEBUG_EXIT] poll failed: {_e}", flush=True)
             self.close()
             raise
         except Exception:
