@@ -4772,7 +4772,6 @@ for dtype in (torch.int32, torch.int64):
     @skip_if_cpu
     @skipIfXpu(msg="CUDA codegen check")
     @skip_if_not_triton
-    @xfail_if_mps_triton_codegen
     def test_bmm_dot_shape_dynamic_k_range_spans_decompose_threshold(self):
         def fn(a, b):
             return torch.bmm(a, b)
@@ -13717,7 +13716,12 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         code2 = run_and_get_triton_code(override, x_small)
         self.assertNotEqual(code1, code2)
 
-        self.assertEqual(no_override(x_small), override(x_small))
+        # The hint override changes the reduction tiling, so the two kernels sum
+        # the 4096 fp32 elements in a different order; widen the tolerance to the
+        # legitimate reduction-order spread.
+        self.assertEqual(
+            no_override(x_small), override(x_small), atol=4e-5, rtol=2e-5
+        )
 
     @requires_gpu()
     @skip_if_not_triton
