@@ -2117,11 +2117,14 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
       reports OutOfResources for over-budget configs and the autotuner discards
       them, but we keep the default config space small so we do not flood the
       autotuner with configs that always OOM.
-    - Apple GPU has no NVIDIA-style async-copy pipelining, so num_stages>1 buys
-      no performance. num_stages is pinned to 2 only because num_stages=1 makes
-      the AppleGPU backend emit a metallib that Metal's runtime rejects at PSO
-      creation ("Failed to materializeAll"); num_stages=2 is the smallest value
-      that materializes. See METALLC_NOTES.md item 3. We deliberately do NOT
+    - num_stages is pinned to 2: the AppleGPU backend stages A/B operands through
+      threadgroup memory with an async-copy double-buffer, and on the aligned
+      (async) GEMM path that staging hides load latency and wins ~20% over
+      num_stages=1 (which uses no threadgroup staging). The kernel is
+      latency/staging-bound, not occupancy-bound, so the second stage pays for
+      itself. (num_stages=1 also materializes fine now -- the old "Failed to
+      materializeAll" PSO failure documented in METALLC_NOTES.md item 3 is
+      resolved; it is simply slower on the async path.) We deliberately do NOT
       sweep num_stages (a single value keeps the autotune space small).
     """
 
@@ -2130,8 +2133,8 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps). Tiles are sized so
         # that f32 staging of A (M*K) + B (K*N) plus the mma->blocked output
         # conversion fits inside the 32KB threadgroup budget. num_stages is fixed
-        # at 2 (see class docstring: dodges the num_stages=1 PSO failure; Metal
-        # has no pipelining so the extra stage costs nothing meaningful).
+        # at 2 (see class docstring: the async-copy double-buffer hides load
+        # latency and wins ~20% on the aligned path).
         self.mm_configs = [
             GemmConfig(16, 16, 16, 2, 1),
             GemmConfig(32, 32, 16, 2, 2),
