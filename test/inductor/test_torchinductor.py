@@ -11550,8 +11550,8 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             kwargs["atol"] = 1e-4
             kwargs["rtol"] = 1.3e-5
         elif self.device == "mps":
-            kwargs["atol"] = 1e-3
-            kwargs["rtol"] = 1e-5
+            kwargs["atol"] = 1e-4
+            kwargs["rtol"] = 5e-6
 
         def fn(x, y):
             y = torch.ops.aten.select.int(y, 0, 2)
