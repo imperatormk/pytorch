@@ -4416,6 +4416,11 @@ def run(runner, args, original_dir=None):
     if args.devices != ["cpu"] and (HAS_CUDA or HAS_XPU):
         global synchronize
         synchronize = torch.cuda.synchronize if HAS_CUDA else torch.xpu.synchronize
+    elif "mps" in args.devices:
+        # Without this the no-op synchronize() times only async dispatch for the
+        # eager path while the compiled path effectively syncs, manufacturing a
+        # bogus ~500x slowdown. mps.synchronize makes both paths measure GPU work.
+        synchronize = torch.mps.synchronize
 
     if args.nnc:
         torch._C._jit_override_can_fuse_on_cpu(True)
