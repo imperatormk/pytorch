@@ -712,6 +712,13 @@ def convolution(
             unroll = is_ones(kernel_shape)
             # The non-unrolled loop in these templates triggers triton#1254
             # with 8 warps, producing incorrect results for non-1x1 kernels.
+            # TODO(mps): revisit for the MPS/AppleGPU backend. (1) The unroll
+            # decision is shape-forced (1x1 only) and tuned against CUDA codegen;
+            # on AppleGPU the unrolled 1x1 path emits big flat FMA blocks that
+            # stress the LLVM mid-end (the SLP-cost / depthwise-conv hang class),
+            # so the True/False tradeoff may differ. (2) The 8-warp triton#1254
+            # miscompile is a CUDA-side defect; whether AppleGPU needs the same
+            # num_warps<=4 clamp is unverified - it may be over-restrictive here.
             num_warps = cfg.num_warps if unroll else min(cfg.num_warps, 4)
 
             if ndim == 2:
