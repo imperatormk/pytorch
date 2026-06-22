@@ -2110,7 +2110,13 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
 
     Constraints specific to the out-of-tree AppleGPU Triton backend:
     - A warp is a Metal simdgroup of 32 threads (warpSize=32). Useful warp
-      counts are 1/2/4; 8 warps (256 threads) rarely helps and is dropped.
+      counts are 1/2/4 for most shapes; 8 warps (256 threads) rarely helps and
+      is dropped -- EXCEPT on huge-N tall-skinny GEMM (e.g. DistilBert's
+      16384x768x30522 vocab projection), where a single 64x64x32 num_warps=8
+      tile beats both the nw4 tiles and aten/MPSGraph (~297ms vs ~316ms, err=0).
+      The extra simdgroups give the N=30522 output enough in-flight stores to
+      hide store latency; on the square-ish 3072 shapes nw8 is a loss, so it is
+      kept as exactly one config rather than swept.
     - There is a hard 32KB threadgroup-memory budget per dispatch. The MMA
       lowering stages both operands plus an mma->blocked output conversion in
       threadgroup memory, so block tiles must stay small. The backend itself
@@ -2143,6 +2149,7 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(32, 64, 16, 2, 4),
             GemmConfig(64, 64, 16, 2, 4),
             GemmConfig(64, 64, 32, 2, 4),
+            GemmConfig(64, 64, 16, 2, 8),
         ]
         # The inherited conv_configs are tuned for NVIDIA smem (up to 128x256 and
         # 128x128x128, ~64KB of f32 staging) and all OOM on Apple's 32KB
