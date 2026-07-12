@@ -4814,7 +4814,6 @@ for dtype in (torch.int32, torch.int64):
         with self.assertRaisesRegex(NotImplementedError, msg):
             torch.compile(fn, fullgraph=True)(a, b)
 
-    @skipIfPy312  # segfaults
     @skipCUDAIf(not SM80OrLater, "Requires sm80")
     def test_mixed_mm(self):
         def fn(a, b):
@@ -4829,7 +4828,6 @@ for dtype in (torch.int32, torch.int64):
             check_lowp=True,
         )
 
-    @skipIfPy312  # segfaults
     @skipCUDAIf(not SM80OrLater, "Requires sm80")
     def test_mixed_mm2(self):
         def fn(a, b, scale, bias):
@@ -4846,7 +4844,6 @@ for dtype in (torch.int32, torch.int64):
             check_lowp=True,
         )
 
-    @skipIfPy312  # segfaults
     @skipCUDAIf(not SM80OrLater, "Requires sm80")
     def test_mixed_mm3(self):
         def fn(a, b):
@@ -5931,7 +5928,7 @@ for dtype in (torch.int32, torch.int64):
         )
 
     def test_conv2d_channels_last(self):
-        if self.device == GPU_TYPE:
+        if self.device == "__never__":
             raise unittest.SkipTest("only support cpu conv2d channels_last")
 
         m = torch.nn.Sequential(
@@ -7131,7 +7128,7 @@ for dtype in (torch.int32, torch.int64):
 
     @config.patch(implicit_fallbacks=True)
     def test_no_grad_embedding_renorm_negative_indices(self):
-        if self.device != "cuda":
+        if self.device not in ("cuda", "mps"):
             raise unittest.SkipTest("requires cuda")
 
         def fn(weight, indices):
@@ -7320,7 +7317,7 @@ for dtype in (torch.int32, torch.int64):
             assertGeneratedKernelCountEqual(self, 1)
 
     def test_layer_norm_rejects_complex_inputs(self):
-        if self.device not in ("cpu", "cuda"):
+        if self.device not in ("cpu", "cuda", "mps"):
             raise unittest.SkipTest("Only validated on CPU/CUDA")
 
         m = torch.nn.LayerNorm(10).to(self.device)
@@ -8801,7 +8798,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 c_fn(x)
 
     def test_convolution_errors_on_input_weight_dtype_mismatch(self):
-        if self.device != "cuda":
+        if self.device not in ("cuda", "mps"):
             raise unittest.SkipTest("CUDA only")
 
         def fn(x):
@@ -11382,7 +11379,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                     check_lowp=check_lowp,
                 )
 
-    @unittest.skip("Flaky test, needs debugging")
     def test_scatter_add1(self):
         def fn(a, dim, index, b):
             return aten.scatter_add(a, dim, index, b)
@@ -13015,7 +13011,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         t1[:, 100] = float("nan")
         self.common(fn, (t1,))
 
-    @requires_cuda
+    @requires_gpu()
     def test_max_min_bool(self):
         # Regression test for https://github.com/pytorch/pytorch/issues/174069
         # and https://github.com/pytorch/pytorch/issues/184893
@@ -16968,7 +16964,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         self.assertEqual(compiled_out.shape, torch.Size([1, 1, 0, 0]))
         self.assertEqual(eager_out, compiled_out)
 
-    @requires_cuda
+    @requires_gpu()
     def test_lazy_conv_zero_in_channels_backward(self):
         for dim in (1, 2, 3):
             conv_cls = getattr(torch.nn, f"LazyConv{dim}d")
