@@ -657,7 +657,9 @@ def convolution(
         and V.graph.sizevars.statically_known_equals(in_chan * groups, x.get_size()[1])  # type: ignore[arg-type]
     ):
         if (
-            is_ones(kernel_shape)
+            # conv1x1_via_mm permutes as NCHW->NHWC, so it only handles 2D conv
+            ndim == 2
+            and is_ones(kernel_shape)
             and is_ones(stride)
             and is_zeros(padding)
             and groups == 1
