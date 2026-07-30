@@ -2026,9 +2026,16 @@ class triton:
     # 1/True: enable, use tuning to pick between different subkernels
     # 2: enable, force using persistent reduction (for debugging)
     # 3: enable, force using non-persistent reduction (for debugging)
+    # Defaults on for MPS: reduction sizes between the persistent and
+    # add_persistent_rblock heuristics (H=2048) otherwise emit a looped
+    # reduction that runs ~5x under the persistent one. Left off elsewhere so
+    # CUDA/ROCm behaviour is unchanged.
     # pyrefly: ignore [bad-assignment]
     multi_kernel: Literal[0, 1, 2, 3] = int(
-        os.environ.get("TORCHINDUCTOR_MULTI_KERNEL", "0")
+        os.environ.get(
+            "TORCHINDUCTOR_MULTI_KERNEL",
+            "1" if torch.mps.is_available() else "0",
+        )
     )  # type: ignore[assignment]
 
     # hint to Triton when arguments are divisible by 16
@@ -2685,7 +2692,9 @@ cuda_backend: Literal["triton", "halide", "pallas"] = "triton"
 tpu_backend: Literal["pallas"] = "pallas"
 
 # Backend to use for MPS codegen either "metal" (native Metal shaders) or "triton" (via Apple GPU backend)
-mps_backend: Literal["metal", "triton"] = "metal"
+mps_backend: Literal["metal", "triton"] = os.environ.get(  # type: ignore[assignment]
+    "TORCHINDUCTOR_MPS_BACKEND", "triton"
+)
 
 # Backend to use for XPU codegen either "triton"
 xpu_backend: Literal["triton"] = "triton"

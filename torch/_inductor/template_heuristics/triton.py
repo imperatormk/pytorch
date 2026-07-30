@@ -2110,13 +2110,18 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
 
     Constraints specific to the out-of-tree AppleGPU Triton backend:
     - A warp is a Metal simdgroup of 32 threads (warpSize=32). Useful warp
-      counts are 1/2/4 for most shapes; 8 warps (256 threads) rarely helps and
-      is dropped -- EXCEPT on huge-N tall-skinny GEMM (e.g. DistilBert's
-      16384x768x30522 vocab projection), where a single 64x64x32 num_warps=8
-      tile beats both the nw4 tiles and aten/MPSGraph (~297ms vs ~316ms, err=0).
-      The extra simdgroups give the N=30522 output enough in-flight stores to
-      hide store latency; on the square-ish 3072 shapes nw8 is a loss, so it is
-      kept as exactly one config rather than swept.
+      counts are 1/2/4 for small tiles, but on the 64x64 tiles 8 warps (256
+      threads) is a large win and both are kept. Measured on M1 Pro, fp32
+      square, paired alternating medians (spreads 3-10%, err=0.0 at nw8 vs
+      4.5e-04..1.4e-03 at nw4, i.e. nw8 is also the more accurate config):
+        64x64x32  2048: 2026 -> 2959 GF/s (1.46x), 4096: 2023 -> 3059 (1.51x)
+        64x64x16  2048: 1544 -> 2710 GF/s (1.75x), 4096: 1593 -> 2752 (1.73x)
+      A 64x64 tile is 64 accumulator frags; at 4 warps that is 16 frags each,
+      which underfeeds the machine. An earlier note here claimed nw8 "rarely
+      helps" and was a loss on square shapes -- that came from a benchmark
+      whose aten baseline was timed once before the config loop and absorbed
+      warmup, so its ratios were unreliable. It also holds on the huge-N
+      tall-skinny case (DistilBert 16384x768x30522, ~297ms vs aten ~316ms).
     - There is a hard 32KB threadgroup-memory budget per dispatch. The MMA
       lowering stages both operands plus an mma->blocked output conversion in
       threadgroup memory, so block tiles must stay small. The backend itself
@@ -2150,6 +2155,7 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(64, 64, 16, 2, 4),
             GemmConfig(64, 64, 32, 2, 4),
             GemmConfig(64, 64, 16, 2, 8),
+            GemmConfig(64, 64, 32, 2, 8),
         ]
         # The inherited conv_configs are tuned for NVIDIA smem (up to 128x256 and
         # 128x128x128, ~64KB of f32 staging) and all OOM on Apple's 32KB
@@ -2170,6 +2176,26 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             ConvConfig(32, 32, 16, 2, 2),
             ConvConfig(32, 32, 32, 2, 2),
             ConvConfig(64, 32, 32, 2, 4),
+            # num_warps=8 entries were tried here and REMOVED. conv.py no
+            # longer clamps num_warps on MPS, so they do reach the autotuner
+            # (16 choices instead of 13), and they are numerically clean -- but
+            # a paired in-process A/B over 3x3 s1 / 3x3 s2 / 7x7 stem /
+            # depthwise x fp32,fp16 scattered 0.76x-1.29x around parity with
+            # per-measurement spreads of 30-700%, i.e. no effect distinguishable
+            # from noise. These conv shapes run in 0.02-0.7 ms, deep in the
+            # regime where GPU clock/power state dominates; single-run
+            # conv_bench tables at these sizes swung 3-5x on identical binaries.
+            # Unlike the 64x64 GEMM tiles, adding warps here does not pay.
+            #
+            # Sub-16 BLOCK_K was also tried and is NOT usable. A low-channel
+            # conv (stem Cin=3) leaves most K lanes of every tl.dot empty, so
+            # narrowing BLOCK_K looks like the obvious fix -- but block_k=4
+            # fails to compile at all ("Input shapes should have M >= 1,
+            # N >= 1 and K >= 8" out of tl.dot), and block_k=8 buys ~11% on
+            # the 7x7 stem, inside autotune noise. The real fix for the
+            # padding is the FLAT_K conv2d template body (see
+            # kernel/conv.py), which reindexes the reduction as one flat
+            # KERNEL_H*KERNEL_W*GROUP_IN_C axis instead of narrowing K.
         ]
         # Keep exhaustive search aligned with the default space; we have not
         # validated a larger Apple-GPU search space.

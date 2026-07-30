@@ -103,6 +103,14 @@ depthwise_conv2d_template = TritonTemplate(
     cache_codegen_enabled_for_template=True,
 )
 
+# Set to "A" to suppress the flat-K conv choices (used to A/B the template).
+CONV_AB_VARIANT = os.environ.get("CONV_AB_VARIANT", "B")
+
+
+def _flat_k_enabled() -> bool:
+    return CONV_AB_VARIANT != "A"
+
+
 LOOP_BODY_2D = """
         idx_x_h = i - PADDING_H + idx_y_h * STRIDE_H
         idx_x_w = j - PADDING_W + idx_y_w * STRIDE_W
@@ -127,6 +135,61 @@ LOOP_BODY_2D = """
             (idx_x_c * stride_wc_in)[:, None] + (i * stride_wh) + (j * stride_ww)
         )
         mask_w = (idx_x_c[:, None] < GROUP_IN_C) & (idx_y_c[None, :] < GROUP_OUT_C)
+        matrix_w = tl.load(w_ptrs, mask=mask_w, other=0.0)
+        acc += tl.dot(matrix_x, matrix_w, allow_tf32=ALLOW_TF32)
+"""
+
+# Flat-K variant of LOOP_BODY_2D. The default body walks a nested
+# (KERNEL_H*KERNEL_W) x ceil(GROUP_IN_C/BLOCK_K) reduction, so when GROUP_IN_C
+# is smaller than BLOCK_K every tl.dot runs with only GROUP_IN_C of BLOCK_K
+# lanes carrying data (a 3-channel stem wastes 13/16 of the MMA). Here the
+# reduction is one flat axis over KERNEL_H*KERNEL_W*GROUP_IN_C, so a BLOCK_K
+# slice packs several (i, j) taps together and is fully dense.
+#
+# What this actually buys, measured on AppleGPU/MPS (interleaved autotune, so
+# both bodies are timed under identical clocks; 3 independent repeats):
+#   3x3 depthwise 128ch  1.71x / 1.66x / 1.62x
+#   7x7 stem Cin=1       1.19x / 1.19x / 1.20x
+#   7x7 stem Cin=3       1.14x / 1.14x / 1.16x
+#   7x7 stem Cin=8       1.09x / 1.05x / 1.03x
+# It is worth less than the lane arithmetic suggests because a BLOCK_K slice
+# now spans several taps, so the x load becomes a strided gather and costs
+# ~4x more per iteration; the win is the ~5x drop in trip count, not the
+# denser MMA. (Confirmed separately: stem time is flat in Cin at fixed trip
+# count, and scales linearly with trip count -- this loop is iteration-bound,
+# not MMA-bound.) Only offered when GROUP_IN_C < BLOCK_K, where the trip count
+# actually falls; at GROUP_IN_C >= BLOCK_K the two bodies do the same work and
+# the gather is pure loss.
+LOOP_BODY_2D_FLAT = """
+        kk = k + tl.arange(0, BLOCK_K)
+        idx_x_c = kk % GROUP_IN_C
+        ij = kk // GROUP_IN_C
+        i = ij // KERNEL_W
+        j = ij % KERNEL_W
+        k_valid = kk < KKC
+
+        idx_x_h = flat_yh[:, None] + i[None, :]
+        idx_x_w = flat_yw[:, None] + j[None, :]
+
+        x_ptrs = x_base + (
+            idx_x_h * stride_xh
+            + idx_x_w * stride_xw
+            + (idx_x_c * stride_xc)[None, :]
+        )
+        mask_x = (
+            flat_nvalid[:, None]
+            & (idx_x_h >= 0)
+            & (idx_x_h < IN_H)
+            & (idx_x_w >= 0)
+            & (idx_x_w < IN_W)
+            & k_valid[None, :]
+        )
+        matrix_x = tl.load(x_ptrs, mask=mask_x, other=0.0)
+
+        w_ptrs = w_base + (
+            idx_x_c * stride_wc_in + i * stride_wh + j * stride_ww
+        )[:, None]
+        mask_w = k_valid[:, None] & flat_cvalid[None, :]
         matrix_w = tl.load(w_ptrs, mask=mask_w, other=0.0)
         acc += tl.dot(matrix_x, matrix_w, allow_tf32=ALLOW_TF32)
 """
@@ -195,6 +258,17 @@ conv2d_template = TritonTemplate(
     + """
 {% endfor %}
 {% endfor %}
+{% elif FLAT_K %}
+    KKC = KERNEL_H * KERNEL_W * GROUP_IN_C
+    flat_yh = idx_y_h * STRIDE_H - PADDING_H
+    flat_yw = idx_y_w * STRIDE_W - PADDING_W
+    flat_nvalid = idx_n < BATCH
+    flat_cvalid = idx_y_c < GROUP_OUT_C
+    for kt in range(tl.cdiv(KKC, BLOCK_K)):
+        k = kt * BLOCK_K
+        """
+    + LOOP_BODY_2D_FLAT
+    + """
 {% else %}
     # Could be simplified, but slightly slower:
     # for i in range(KERNEL_H):
@@ -719,30 +793,50 @@ def convolution(
             # on AppleGPU the unrolled 1x1 path emits big flat FMA blocks that
             # stress the LLVM mid-end (the SLP-cost / depthwise-conv hang class),
             # so the True/False tradeoff may differ. (2) The 8-warp triton#1254
-            # miscompile is a CUDA-side defect; whether AppleGPU needs the same
-            # num_warps<=4 clamp is unverified - it may be over-restrictive here.
+            # miscompile is a CUDA-side defect and does NOT reproduce on
+            # AppleGPU (measured rel err <=8.7e-07 at 8 warps, never worse than
+            # 4) -- but lifting the clamp there was measured and bought nothing:
+            # a paired in-process A/B scattered 0.76x-1.29x around parity at
+            # 30-700% spread. See the conv_configs note in
+            # template_heuristics/triton.py. Left clamped: no evidence for it.
             num_warps = cfg.num_warps if unroll else min(cfg.num_warps, 4)
 
-            if ndim == 2:
-                conv2d_template.maybe_append_choice(
-                    choices,
-                    input_nodes=(x, weight),
-                    layout=layout,
-                    KERNEL_H=kernel_shape[0],
-                    KERNEL_W=kernel_shape[1],
-                    STRIDE_H=stride[0],
-                    STRIDE_W=stride[1],
-                    PADDING_H=padding[0],
-                    PADDING_W=padding[1],
-                    GROUPS=groups,
-                    # TODO(jansel): try unroll for bigger kernels once fixed:
-                    #               https://github.com/triton-lang/triton/issues/1254
-                    UNROLL=unroll,
-                    ALLOW_TF32=torch.backends.cudnn.fp32_precision == "tf32",
-                    num_stages=cfg.num_stages,
-                    num_warps=num_warps,
-                    **cfg.kwargs,
+            # The nested reduction pads the K axis out to BLOCK_K per (i, j)
+            # tap, so a conv whose per-group channel count is below BLOCK_K
+            # spends most of its MMA on zeros. Offer the flat-K body as an
+            # extra autotune choice there; it packs several taps per dot.
+            flat_k_variants = [False]
+            if (
+                not unroll
+                and _flat_k_enabled()
+                and V.graph.sizevars.statically_known_lt(
+                    in_chan, cfg.kwargs["BLOCK_K"]
                 )
+            ):
+                flat_k_variants.append(True)
+
+            if ndim == 2:
+                for flat_k in flat_k_variants:
+                    conv2d_template.maybe_append_choice(
+                        choices,
+                        input_nodes=(x, weight),
+                        layout=layout,
+                        FLAT_K=flat_k,
+                        KERNEL_H=kernel_shape[0],
+                        KERNEL_W=kernel_shape[1],
+                        STRIDE_H=stride[0],
+                        STRIDE_W=stride[1],
+                        PADDING_H=padding[0],
+                        PADDING_W=padding[1],
+                        GROUPS=groups,
+                        # TODO(jansel): try unroll for bigger kernels once fixed:
+                        #               https://github.com/triton-lang/triton/issues/1254
+                        UNROLL=unroll,
+                        ALLOW_TF32=torch.backends.cudnn.fp32_precision == "tf32",
+                        num_stages=cfg.num_stages,
+                        num_warps=num_warps,
+                        **cfg.kwargs,
+                    )
             elif ndim == 3:
                 conv3d_template.maybe_append_choice(
                     choices,
