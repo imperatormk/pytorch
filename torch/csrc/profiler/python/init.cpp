@@ -409,6 +409,7 @@ void initPythonBindings(PyObject* module) {
       .value("MTIA", ActivityType::MTIA, "MTIA device activity.")
       .value("CUDA", ActivityType::CUDA, "CUDA kernels and runtime.")
       .value("HPU", ActivityType::HPU, "HPU device activity.")
+      .value("MPS", ActivityType::MPS, "MPS device activity.")
       .value(
           "PrivateUse1",
           ActivityType::PrivateUse1,

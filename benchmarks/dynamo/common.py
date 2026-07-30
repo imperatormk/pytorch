@@ -4409,9 +4409,21 @@ def run(runner, args, original_dir=None):
             log.warning("torch.cuda.is_available() == False, using CPU")
             args.devices = ["cpu"]
 
+    # Route MPS inductor through the Triton backend when the surrounding tooling
+    # asks for it (MPS_BACKEND=triton). Inductor itself only reads its own
+    # config.mps_backend, so without this the bench silently falls back to the
+    # built-in Metal codegen even with MPS_BACKEND=triton set.
+    if "mps" in args.devices and os.environ.get("MPS_BACKEND") == "triton":
+        inductor_config.mps_backend = "triton"
+
+    global synchronize
     if args.devices != ["cpu"] and (HAS_CUDA or HAS_XPU):
-        global synchronize
         synchronize = torch.cuda.synchronize if HAS_CUDA else torch.xpu.synchronize
+    elif "mps" in args.devices:
+        # Without this the no-op synchronize() times only async dispatch for the
+        # eager path while the compiled path effectively syncs, manufacturing a
+        # bogus ~500x slowdown. mps.synchronize makes both paths measure GPU work.
+        synchronize = torch.mps.synchronize
 
     if args.nnc:
         torch._C._jit_override_can_fuse_on_cpu(True)

@@ -514,6 +514,9 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
     if (at::hasHPU()) {
       activities.insert(torch::profiler::impl::ActivityType::HPU);
     }
+    if (at::hasMPS()) {
+      activities.insert(torch::profiler::impl::ActivityType::MPS);
+    }
     if (c10::get_privateuse1_backend() != "privateuseone") {
       activities.insert(torch::profiler::impl::ActivityType::PrivateUse1);
     }

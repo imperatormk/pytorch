@@ -16,6 +16,7 @@ enum class C10_API_ENUM ActivityType {
   CUDA, // CUDA kernels, runtime
   HPU, // HPU kernels, runtime
   MTIA, // MTIA kernels, runtime
+  MPS, // MPS kernels, runtime
   PrivateUse1, // PrivateUse1 kernels, runtime
   NUM_KINETO_ACTIVITIES, // must be the last one
 };
@@ -24,7 +25,8 @@ inline std::string actToString(ActivityType t) {
   const std::array<
       std::string,
       static_cast<size_t>(ActivityType::NUM_KINETO_ACTIVITIES)>
-      ActivityTypeNames = {"CPU", "XPU", "CUDA", "MTIA", "PrivateUse1"};
+      ActivityTypeNames =
+          {"CPU", "XPU", "CUDA", "HPU", "MTIA", "MPS", "PrivateUse1"};
   return ActivityTypeNames[static_cast<int>(t)];
 }
 

@@ -293,7 +293,7 @@ class profile:
                 )
 
         if self.use_device is not None:
-            VALID_DEVICE_OPTIONS = ["cuda", "xpu", "mtia", "hpu"]
+            VALID_DEVICE_OPTIONS = ["cuda", "xpu", "mtia", "hpu", "mps"]
             if _get_privateuse1_backend_name() != "privateuseone":
                 VALID_DEVICE_OPTIONS.append(_get_privateuse1_backend_name())
             if self.use_device not in VALID_DEVICE_OPTIONS:
@@ -347,6 +347,12 @@ class profile:
                     "Legacy HPU profiling is not supported. Requires use_kineto=True on HPU devices."
                 )
             self.kineto_activities.add(ProfilerActivity.HPU)
+        elif self.use_device == "mps":
+            # MPS has no dedicated kineto device-trace backend; its kernels are
+            # captured on the CPU side. Requesting MPS profiling therefore maps
+            # to the CPU activity, so add it even when MPS was the only requested
+            # activity (otherwise kineto_activities would be empty).
+            self.kineto_activities.add(ProfilerActivity.CPU)
         elif self.use_device is not None and self.use_device != "privateuseone":
             if use_kineto:
                 # Native tracing mode: use KINETO_PRIVATEUSE1 with registered IActivityProfiler
