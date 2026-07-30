@@ -1781,6 +1781,16 @@ def is_big_gpu(index_or_device: int | torch.device = 0) -> bool:
 
     prop = DeviceProperties.create(device)
 
+    # Apple GPUs (Metal) do not expose NVIDIA-style SM counts; the multiprocessor
+    # count the MPS driver reports (a core-count guess) is unrelated to the 68-SM
+    # threshold below, which exists to gate out small NVIDIA parts. Treat MPS as
+    # always eligible for the Triton GEMM template; the autotuner still compares
+    # it against aten::mm (MPSGraph) and picks the faster. Conv keeps an aten
+    # fallback (see kernel/conv.py) so an all-OOR Triton conv choice set cannot
+    # raise NoValidChoicesError.
+    if device.type == "mps":
+        return True
+
     # SM logic is not relevant to ROCm gpus
     # Arbitrarily skipping the older models
     if torch.version.hip:
@@ -1907,6 +1917,18 @@ def _use_conv_bwd_input_autotune_backend(backend: str) -> bool:
     ]
 
 
+def _mps_triton_gemm_enabled(layout: Layout) -> bool:
+    """
+    The out-of-tree AppleGPU Triton backend routes matmuls to its simdgroup-MMA
+    kernels via the Triton GEMM template. Selecting ``mps_backend == "triton"``
+    is itself the opt-in: it makes the Triton GEMM template an autotune *choice*
+    (alongside aten::mm / MPSGraph) without the user having to also pass
+    ``max_autotune_gemm``. ATEN stays in the choice set, so the autotuner picks
+    the faster of {Triton MMA, MPSGraph}.
+    """
+    return layout.device.type == "mps" and config.mps_backend == "triton"
+
+
 def use_triton_template(
     layout: Layout,
     *,
@@ -1930,7 +1952,12 @@ def use_triton_template(
             or (layout.device.type == "cpu" and layout.dtype in layout_dtypes)
         )
         # some callers handle max-autotune checking externally
-        and (config.max_autotune or config.max_autotune_gemm or not check_max_autotune)
+        and (
+            config.max_autotune
+            or config.max_autotune_gemm
+            or _mps_triton_gemm_enabled(layout)
+            or not check_max_autotune
+        )
         and _use_autotune_backend("TRITON")
         and has_backend_feature(layout.device, BackendFeature.TRITON_TEMPLATES)
     )
@@ -3989,7 +4016,10 @@ def get_current_backend(device_type: str | None = None) -> str:
     if device_type == "cpu":
         return config.cpu_backend
     elif device_type == "mps":
-        return "mps"
+        # MPS has two codegen paths: native "metal" and "triton" (out-of-tree
+        # AppleGPU backend). The triton path needs the same fp16->fp32 reduction
+        # upcasts as any other triton backend, so report "triton" for it.
+        return "triton" if config.mps_backend == "triton" else "mps"
     elif device_type == "xpu":
         return config.xpu_backend
     elif device_type == "tpu":

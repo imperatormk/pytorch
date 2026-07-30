@@ -1,0 +1,83 @@
+{{def_kernel("X", "W")}}
+    # Depthwise conv2d via direct per-channel windowed multiply-accumulate.
+    # groups == in_channels == out_channels, so each output channel reads
+    # exactly one input channel. No tl.dot / implicit GEMM: we loop the
+    # KERNEL_H x KERNEL_W window and do acc += x * w in registers.
+    #
+    # Tiling: BLOCK_X output pixels (flattened over batch * OUT_H * OUT_W)
+    # times BLOCK_C channels. Logical NCHW indices are handed to store_output
+    # so the actual memory layout (NCHW or channels-last) is resolved by
+    # inductor.
+
+    BATCH = {{size("X", 0)}}
+    CHANNELS = {{size("X", 1)}}
+    IN_H = {{size("X", 2)}}
+    IN_W = {{size("X", 3)}}
+    OUT_H = {{size(None, 2)}}
+    OUT_W = {{size(None, 3)}}
+
+    stride_xn = {{stride("X", 0)}}
+    stride_xc = {{stride("X", 1)}}
+    stride_xh = {{stride("X", 2)}}
+    stride_xw = {{stride("X", 3)}}
+
+    # W is (OUT_C, 1, KERNEL_H, KERNEL_W); the in-channel dim is 1 for depthwise.
+    stride_wc = {{stride("W", 0)}}
+    stride_wh = {{stride("W", 2)}}
+    stride_ww = {{stride("W", 3)}}
+
+    # Grid: (cdiv(BATCH * OUT_H * OUT_W, BLOCK_X), cdiv(CHANNELS, BLOCK_C))
+    pid_x = tl.program_id(0).to(INDEX_DTYPE)
+    pid_c = tl.program_id(1).to(INDEX_DTYPE)
+
+    x_offs = pid_x * BLOCK_X + tl.arange(0, BLOCK_X)
+    c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+
+    # Decode the flattened output-pixel index into (n, oh, ow).
+    idx_y_w = x_offs % OUT_W
+    nh = x_offs // OUT_W
+    idx_y_h = nh % OUT_H
+    idx_n = nh // OUT_H
+
+    x_mask = x_offs < (BATCH * OUT_H * OUT_W)
+    c_mask = c_offs < CHANNELS
+
+    # Top-left corner of the receptive field in the input.
+    base_h = idx_y_h * STRIDE_H - PADDING_H
+    base_w = idx_y_w * STRIDE_W - PADDING_W
+
+    # Per-pixel input base offset (n, c selected); h/w added inside the loop.
+    in_nc = (idx_n * stride_xn)[:, None] + (c_offs * stride_xc)[None, :]
+
+    acc = tl.zeros((BLOCK_X, BLOCK_C), dtype=tl.float32)
+
+    for i in range(KERNEL_H):
+        h_in = base_h + i * DILATION_H
+        h_ok = (h_in >= 0) & (h_in < IN_H)
+        for j in range(KERNEL_W):
+            w_in = base_w + j * DILATION_W
+            w_ok = (w_in >= 0) & (w_in < IN_W)
+
+            wk = tl.load(
+                W + c_offs * stride_wc + i * stride_wh + j * stride_ww,
+                mask=c_mask,
+                other=0.0,
+            ).to(tl.float32)
+
+            x_ptrs = X + in_nc + (h_in * stride_xh)[:, None] + (w_in * stride_xw)[:, None]
+            mask_x = (
+                x_mask[:, None]
+                & h_ok[:, None]
+                & w_ok[:, None]
+                & c_mask[None, :]
+            )
+            x_vals = tl.load(x_ptrs, mask=mask_x, other=0.0).to(tl.float32)
+            acc += x_vals * wk[None, :]
+
+    mask = x_mask[:, None] & c_mask[None, :]
+    idx_n = idx_n[:, None]
+    idx_c = c_offs[None, :]
+    idx_h = idx_y_h[:, None]
+    idx_w = idx_y_w[:, None]
+
+    {{store_output(("idx_n", "idx_c", "idx_h", "idx_w"), "acc", "mask", val_shape=("BLOCK_X", "BLOCK_C"))}}
