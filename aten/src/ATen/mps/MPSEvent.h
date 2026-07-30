@@ -3,10 +3,28 @@
 #pragma once
 
 #include <ATen/mps/MPSStream.h>
+#include <condition_variable>
 #include <ctime>
+#include <memory>
+#include <mutex>
 #include <stack>
 
 namespace at::mps {
+
+// Shared timing + CPU-sync state for a single recorded event. Held by a
+// shared_ptr so a command-buffer completion handler that writes the GPU
+// timestamps can outlive the owning MPSEvent without a use-after-free: the
+// handler fires asynchronously on a GPU dispatch thread and may run after the
+// MPSEvent (e.g. a torch.mps.Event) has already been destroyed or returned to
+// the pool. Both the MPSEvent and the captured block keep a strong reference,
+// so the writes always land in a live object.
+struct MPSEventCpuSync {
+  std::mutex mutex{};
+  std::condition_variable cv{};
+  bool completed = false;
+  uint64_t completion_time = 0;
+  uint64_t start_time = 0;
+};
 
 // NOTE: don't create instances of this class directly.
 // Use MPSEventPool to acquire instances of MPSEvent.
@@ -35,7 +53,11 @@ class MPSEvent {
   }
   // returns the completion timestamp of the event
   uint64_t getCompletionTime() const {
-    return m_completion_time;
+    return m_cpu_sync->completion_time;
+  }
+  // returns the GPU start timestamp of the event's command buffer
+  uint64_t getStartTime() const {
+    return m_cpu_sync->start_time;
   }
   // if already recorded, waits for cpu_sync_cv to be signaled
   void waitForCpuSync();
@@ -48,13 +70,9 @@ class MPSEvent {
   MPSStream* m_stream = nullptr;
   MTLSharedEvent_t m_event = nullptr;
   MTLSharedEventListener* m_listener = nullptr;
-  // used to sync the events created on this Stream with CPU
-  std::mutex m_cpu_sync_mutex{};
-  std::condition_variable m_cpu_sync_cv{};
-  // CondVar predicate to sync the events created on this Stream with CPU
-  bool m_cpu_sync_completed = false;
-  // used to compute elapsed time
-  uint64_t m_completion_time = 0;
+  // CPU-sync + timing state, shared with the command-buffer completion handler
+  // so it can be written safely even if this MPSEvent is destroyed first.
+  std::shared_ptr<MPSEventCpuSync> m_cpu_sync = std::make_shared<MPSEventCpuSync>();
 
   void recordLocked(bool syncEvent);
   bool waitLocked(bool syncEvent);

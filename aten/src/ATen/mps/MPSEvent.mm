@@ -21,15 +21,49 @@ MPSEvent::~MPSEvent() {
 void MPSEvent::recordLocked(bool syncEvent) {
   // active encoders must end before encoding or waiting
   m_stream->endKernelCoalescing();
-  ++m_signalCounter;
+  // Timing pin: a start timing record opens the pinned region (so involuntary
+  // commits triggered by the kernel's allocations between start and end cannot
+  // split the command buffer); the matching end timing record closes it after
+  // the end signal is encoded below. This guarantees the start and end events
+  // share one command buffer, so their GPU timestamps cannot invert.
+  bool openedTimedPair = false;
   if (m_enable_timing) {
-    notifyLocked(^(id<MTLSharedEvent>, uint64_t) {
-      m_completion_time = getTime();
-      notifyCpuSync();
-    });
+    openedTimedPair = m_stream->openOrCloseTimedPair();
   }
+  ++m_signalCounter;
   id<MTLCommandBuffer> commandBuffer = m_stream->commandBuffer();
+  if (m_enable_timing) {
+    // Use the command buffer's GPUStartTime/GPUEndTime: real GPU timestamps
+    // (seconds) for when this buffer executed, instead of a CPU monotonic-clock
+    // sample taken when the CPU thread observes the shared-event signal. The CPU
+    // sample jitters and, for back-to-back fast kernels, ties or inverts across
+    // event pairs, which collapses elapsed_time to 0 and makes the inductor
+    // autotuner unable to rank choices.
+    notifyLocked(^(id<MTLSharedEvent>, uint64_t) {});
+    // Capture the shared CPU-sync state by value (a strong shared_ptr ref) so
+    // this handler, which fires asynchronously on a GPU dispatch thread, can run
+    // safely even after this MPSEvent has been destroyed or recycled by the
+    // pool. Writing through `this` here would be a use-after-free.
+    auto cpuSync = m_cpu_sync;
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+      double gpuStart = [cb GPUStartTime];
+      double gpuEnd = [cb GPUEndTime];
+      uint64_t cpuNow = getTime();
+      std::lock_guard<std::mutex> lock(cpuSync->mutex);
+      cpuSync->start_time = gpuStart > 0.0 ? static_cast<uint64_t>(gpuStart * 1e9) : cpuNow;
+      cpuSync->completion_time = gpuEnd > 0.0 ? static_cast<uint64_t>(gpuEnd * 1e9) : cpuNow;
+      cpuSync->completed = true;
+      cpuSync->cv.notify_one();
+    }];
+  }
   [commandBuffer encodeSignalEvent:m_event value:m_signalCounter];
+  // Close the pinned region AFTER the end signal is encoded onto the shared
+  // buffer, so the buffer is never committed before the end signal lands on it.
+  // openedTimedPair is true on the start record (region just opened, keep it
+  // pinned) and false on the end record (unpin now).
+  if (m_enable_timing && !openedTimedPair) {
+    m_stream->unpinTiming();
+  }
   if (syncEvent) {
     m_stream->synchronize(SyncType::COMMIT);
   }
@@ -101,21 +135,28 @@ bool MPSEvent::notify(bool needsLock, MTLSharedEventNotificationBlock block) {
 }
 
 void MPSEvent::notifyCpuSync() {
-  std::lock_guard<std::mutex> lock(m_cpu_sync_mutex);
-  m_cpu_sync_completed = true;
-  m_cpu_sync_cv.notify_one();
+  std::lock_guard<std::mutex> lock(m_cpu_sync->mutex);
+  m_cpu_sync->completed = true;
+  m_cpu_sync->cv.notify_one();
 }
 
 void MPSEvent::waitForCpuSync() {
-  std::unique_lock<std::mutex> lock(m_cpu_sync_mutex);
-  m_cpu_sync_cv.wait(lock, [&] { return m_cpu_sync_completed; });
-  m_cpu_sync_completed = false;
+  auto cpuSync = m_cpu_sync;
+  std::unique_lock<std::mutex> lock(cpuSync->mutex);
+  cpuSync->cv.wait(lock, [&] { return cpuSync->completed; });
+  cpuSync->completed = false;
 }
 
 bool MPSEvent::synchronize() {
+  // Capture the shared CPU-sync state so the shared-event notify block (which
+  // runs on a listener thread) can write the completion time even if this
+  // MPSEvent is destroyed before the block fires.
+  auto cpuSync = m_cpu_sync;
   bool scheduledNotify = notifyLocked(^(id<MTLSharedEvent>, uint64_t) {
-    m_completion_time = getTime();
-    notifyCpuSync();
+    std::lock_guard<std::mutex> lock(cpuSync->mutex);
+    cpuSync->completion_time = getTime();
+    cpuSync->completed = true;
+    cpuSync->cv.notify_one();
   });
 
   if (scheduledNotify) {
@@ -136,10 +177,12 @@ void MPSEvent::reset(MPSStream* stream, bool enable_timing) {
     m_event.signaledValue = 0;
     m_stream = stream;
   }
-  // reset record time
-  m_completion_time = 0;
+  // Allocate fresh CPU-sync state. Any completion handler still outstanding from
+  // a previous recording keeps a strong ref to the OLD state object and writes
+  // there harmlessly, so the recycled event cannot be corrupted by a late
+  // handler. Resetting also zeroes the timestamps for the new recording.
+  m_cpu_sync = std::make_shared<MPSEventCpuSync>();
   m_enable_timing = enable_timing;
-  m_cpu_sync_completed = false;
 };
 
 //-----------------------------------------------------------------
@@ -193,8 +236,12 @@ id_t MPSEventPool::acquireEvent(bool enable_timing) {
 
 void MPSEventPool::releaseEvent(id_t event_id) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  TORCH_CHECK(m_in_use_events.count(event_id) > 0, "Invalid Event ID: ", event_id);
-  // returns the event back to the MPSEventPool
+  // releaseEvent runs from THPEvent_dealloc (a Python tp_dealloc, hence an
+  // implicitly-noexcept destructor context), so it must never throw: a thrown
+  // c10::Error here escapes the destructor and calls std::terminate. A stale or
+  // double release (the event was already returned to the pool, or the pool was
+  // cleared) is benign, so treat a missing id as a no-op instead of a hard
+  // check. erase() already handles the not-present case.
   m_in_use_events.erase(event_id);
 }
 
@@ -226,14 +273,28 @@ double MPSEventPool::elapsedTime(id_t start_event_id, id_t end_event_id) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   MPSEvent* start_event = getInUseEvent(start_event_id, false);
   MPSEvent* end_event = getInUseEvent(end_event_id, false);
-  // the notify is called on a separate thread, so this waits for that
+  // the completion-time handlers run on a separate thread, so wait for both
+  // events (not just the end one) before reading their timestamps; otherwise the
+  // start event's timestamps can still be stale when read below.
+  start_event->waitForCpuSync();
   end_event->waitForCpuSync();
-  const uint64_t start_time = start_event->getCompletionTime();
+  // GPU timestamps (ns) of the events' command buffers. Use the start event's
+  // buffer GPUStartTime and the end event's buffer GPUEndTime, so the interval
+  // spans the work between them: when both events share one command buffer (the
+  // inductor benchmark pattern: start.record(); kernel(); end.record(); commit)
+  // this is exactly that buffer's GPU execution duration, and when they are on
+  // different buffers (CUDA-style) it spans from the first's start to the last's
+  // end. Reading both events' GPUEndTime instead would give 0 for the shared-
+  // buffer case.
+  const uint64_t start_time = start_event->getStartTime();
   const uint64_t end_time = end_event->getCompletionTime();
 
   TORCH_CHECK(start_time > 0 && end_time > 0, "Events were not created with argument 'enable_timing=True'");
-  TORCH_CHECK(
-      end_time > start_time, "End event ", end_event_id, " was not recorded after start event ", start_event_id);
+  // A region below the GPU timer resolution can still measure end <= start;
+  // treat that as 0ms rather than erroring out an entire autotuning choice.
+  if (end_time <= start_time) {
+    return 0.0;
+  }
   return double(end_time - start_time) * 1e-6;
 }
 

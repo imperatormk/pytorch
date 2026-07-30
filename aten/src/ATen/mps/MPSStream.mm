@@ -81,11 +81,20 @@ void MPSStream::synchronize(SyncType syncType) {
       // typically in GPU to GPU copies we won't commit explicitly
       break;
     case SyncType::COMMIT:
-      commit();
+      // A bare COMMIT inside a pinned timed region (e.g. an MPSGraph op run by
+      // the kernel under benchmark) would split the command buffer via
+      // commitAndContinue; suppress it. The benchmark closes each pair with
+      // COMMIT_AND_WAIT, which is never suppressed.
+      if (!isTimingPinned()) {
+        commit();
+      }
       break;
     case SyncType::COMMIT_ADAPTIVE:
-      // the adaptive commit only commits if we hit the low watermark memory threshold
-      if (getIMPSAllocator()->getLowWatermarkValue() <= 1) {
+      // the adaptive commit only commits if we hit the low watermark memory threshold.
+      // While a timed region is pinned, suppress this involuntary commit so the
+      // start and end timing events stay on the same command buffer (otherwise
+      // concurrent GPU load can split the pair and invert their GPU timestamps).
+      if (!isTimingPinned() && getIMPSAllocator()->getLowWatermarkValue() <= 1) {
         commit();
       }
       break;
@@ -95,7 +104,11 @@ void MPSStream::synchronize(SyncType syncType) {
     case SyncType::COMMIT_AND_CONTINUE:
       TORCH_INTERNAL_ASSERT_DEBUG_ONLY(_enableCommitAndContinue,
                                        "CommitAndContinue is called but it is disabled globally!");
-      commitAndContinue();
+      // commitAndContinue is an involuntary buffer split; suppress it while a
+      // timed region is pinned so the timing pair stays on one command buffer.
+      if (!isTimingPinned()) {
+        commitAndContinue();
+      }
       break;
   }
 }
@@ -109,6 +122,11 @@ void MPSStream::commit() {
 }
 
 void MPSStream::commitAndWait() {
+  // A full GPU drain means no timed region can sensibly still be open; clear any
+  // residual timing pin so an interrupted benchmark pair (e.g. an exception
+  // between start.record() and end.record()) cannot leak commit suppression and
+  // later starve the allocator into an OOM.
+  resetTimingPin();
   if (_prevCommandBuffer) {
     // the previous command buffer (if exists) has already been committed,
     // so we just wait until it's completed and then dispose it.
@@ -195,6 +213,16 @@ void MPSStream::copy(id<MTLBuffer> srcBuffer,
       // profilerId has a value only if copy profiling is enabled
       if (profileId) {
         getMPSProfiler().endProfileCopy(profileId, syncType);
+      } else if (syncType == SyncType::COMMIT && isTimingPinned()) {
+        // A non-blocking copy issues SyncType::COMMIT. If a timed region is
+        // pinned, synchronize() would SUPPRESS that commit to keep the timing
+        // pair on one buffer, leaving the blit encoded but uncommitted. The
+        // copy's source/destination buffer can then be freed (tensor dealloc)
+        // before the blit ever runs, so the deferred GPU blit reads a dangling
+        // buffer and crashes inside MPSStream::copy. A copy is not the compute
+        // kernel being timed, so commit it now: memory safety outweighs a rare
+        // timing split when a copy lands mid-benchmark.
+        commit();
       } else {
         synchronize(syncType);
       }
