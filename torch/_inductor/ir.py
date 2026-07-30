@@ -449,10 +449,10 @@ def get_device_type(
 
 def is_triton(x: IRNode | torch.device | None | str) -> bool:
     device = get_device_type(x)
-    # Special case cpu and cuda as using the method below
+    # Special case cpu, cuda, and mps as using the method below
     # to determine if the scheduler is a triton scheduler subclass
     # requires instantiating a scheduler for them
-    if device in ["cpu", "cuda", "xpu"]:
+    if device in ["cpu", "cuda", "xpu", "mps"]:
         if getattr(config, f"{device}_backend") == "triton":
             return True
         return False
@@ -3023,9 +3023,14 @@ class Scan(Loops):
         scan_type = Scan
         if num_splits > 1:
             supports_split = (
-                # pyrefly: ignore [unsupported-operation]
-                torch.version.hip is None or (has_triton and triton_version >= "3.3.0")
-            ) and (len(dtypes) == 1)
+                (
+                    # pyrefly: ignore [unsupported-operation]
+                    torch.version.hip is None
+                    or (has_triton and triton_version >= "3.3.0")
+                )
+                and (len(dtypes) == 1)
+                and V.graph.has_feature(device, BackendFeature.SPLIT_SCAN)
+            )
             if not supports_split:
                 if can_fallback_to_aten:
                     # Fallback to ATen

@@ -207,3 +207,4 @@ else:
 
     sys.modules["torch.distributed"].GroupName = _Stub  # type: ignore[attr-defined]
     sys.modules["torch.distributed"].ProcessGroup = _Stub  # type: ignore[attr-defined]
+    sys.modules["torch.distributed"].DeviceMesh = _Stub  # type: ignore[attr-defined]

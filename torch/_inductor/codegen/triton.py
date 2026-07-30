@@ -7961,6 +7961,7 @@ class TritonScheduling(SIMDScheduling):
             BackendFeature.INPLACE_BUFFERS,
             BackendFeature.MASKED_SCATTER_WITH_INDEX,
             BackendFeature.SCAN,
+            BackendFeature.SPLIT_SCAN,
             BackendFeature.SORT,
             BackendFeature.TRITON_TEMPLATES,
             BackendFeature.TUPLE_REDUCTION,
@@ -7977,14 +7978,21 @@ class TritonScheduling(SIMDScheduling):
 
     @classmethod
     def get_backend_features(cls, device: torch.device):
+        features = cls.backend_features
+        # Decoupled-lookback split scan needs 64-bit device atomics, which
+        # Apple/Metal GPUs lack -- fall back to a single cooperative scan.
+        if device.type == "mps":
+            features = OrderedSet(
+                f for f in features if f is not BackendFeature.SPLIT_SCAN
+            )
         if (
             config.triton.cooperative_reductions
             or config.triton.force_cooperative_reductions
         ):
             return OrderedSet(
-                [*cls.backend_features, BackendFeature.REDUCE_TO_SINGLE_ELEMENT]
+                [*features, BackendFeature.REDUCE_TO_SINGLE_ELEMENT]
             )
-        return cls.backend_features
+        return features
 
     def codegen_comment(self, node_schedule, kernel_name=None):
         wrapper = V.graph.wrapper_code
