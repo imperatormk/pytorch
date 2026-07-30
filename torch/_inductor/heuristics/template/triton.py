@@ -145,6 +145,20 @@ class DepthwiseConvConfig:
 
 
 @dataclasses.dataclass
+class DepthwiseConv2dConfig:
+    """
+    Configuration for the direct (no tl.dot) depthwise conv2d Triton template.
+    Tiles BLOCK_X output pixels (flattened over batch * OUT_H * OUT_W) times
+    BLOCK_C channels.
+    """
+
+    block_x: int
+    block_c: int
+    num_stages: int
+    num_warps: int
+
+
+@dataclasses.dataclass
 class BlackwellGPUGemmConfig(GemmConfig):
     """
     Gemm configuration used for templates with features explicitly
@@ -781,6 +795,21 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
             ),
         ]
 
+        # Direct depthwise conv2d configs: BLOCK_X output pixels times BLOCK_C
+        # channels. Each channel is independent and the KH x KW window is small,
+        # so we want enough pixels in flight to hide load latency while keeping
+        # the threadgroup footprint modest.
+        self.depthwise_conv2d_configs: list[DepthwiseConv2dConfig] = [
+            DepthwiseConv2dConfig(block_x=64, block_c=32, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=128, block_c=32, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=64, block_c=64, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=128, block_c=64, num_stages=2, num_warps=8),
+            DepthwiseConv2dConfig(block_x=256, block_c=32, num_stages=2, num_warps=8),
+            DepthwiseConv2dConfig(block_x=32, block_c=128, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=64, block_c=128, num_stages=2, num_warps=8),
+            DepthwiseConv2dConfig(block_x=1024, block_c=16, num_stages=2, num_warps=8),
+        ]
+
         self.flex_attn_fwd_autotune_configs: list[FlexConfig] = [
             FlexConfig(128, 64, 3, 4),
             FlexConfig(128, 128, 3, 4),
@@ -1180,6 +1209,20 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
                 num_warps=cfg.num_warps,
             )
             for cfg in self.depthwise_conv_configs
+        ]
+
+    def get_depthwise_conv2d_configs(self) -> list[TritonConfig]:
+        """Return TritonConfig list for direct depthwise conv2d autotuning."""
+        return [
+            TritonConfig(
+                {
+                    "BLOCK_X": cfg.block_x,
+                    "BLOCK_C": cfg.block_c,
+                },
+                num_stages=cfg.num_stages,
+                num_warps=cfg.num_warps,
+            )
+            for cfg in self.depthwise_conv2d_configs
         ]
 
     # Flex attn helpers
@@ -2106,6 +2149,70 @@ class MTIAConfigHeuristic(BaseConfigHeuristic):
     """
     Placeholder child class for MTIA specific overrides.
     """
+
+
+class MPSConfigHeuristic(BaseConfigHeuristic):
+    """
+    Apple GPU (MPS / Metal) specific config heuristic.
+
+    Constraints specific to the out-of-tree AppleGPU Triton backend:
+    - A warp is a Metal simdgroup of 32 threads (warpSize=32). Useful warp
+      counts are 1/2/4 for small tiles, but on the 64x64 tiles 8 warps (256
+      threads) is a large win and both are kept. Measured on M1 Pro, fp32
+      square, paired alternating medians:
+        64x64x32  2048: 2026 -> 2959 GF/s (1.46x), 4096: 2023 -> 3059 (1.51x)
+        64x64x16  2048: 1544 -> 2710 GF/s (1.75x), 4096: 1593 -> 2752 (1.73x)
+      A 64x64 tile is 64 accumulator frags; at 4 warps that is 16 frags each,
+      which underfeeds the machine.
+    - There is a hard 32KB threadgroup-memory budget per dispatch. The MMA
+      lowering stages both operands plus an mma->blocked output conversion in
+      threadgroup memory, so block tiles must stay small. The backend reports
+      OutOfResources for over-budget configs and the autotuner discards them,
+      but we keep the default config space small so we do not flood the
+      autotuner with configs that always OOM.
+    - num_stages is pinned to 2: the AppleGPU backend stages A/B operands through
+      threadgroup memory with an async-copy double-buffer, and on the aligned
+      (async) GEMM path that staging hides load latency and wins ~20% over
+      num_stages=1. The kernel is latency/staging-bound, not occupancy-bound.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps). Tiles are sized so
+        # that f32 staging of A (M*K) + B (K*N) plus the mma->blocked output
+        # conversion fits inside the 32KB threadgroup budget.
+        self.mm_configs = [
+            GemmConfig(16, 16, 16, 2, 1),
+            GemmConfig(32, 32, 16, 2, 2),
+            GemmConfig(32, 32, 32, 2, 2),
+            GemmConfig(64, 32, 16, 2, 4),
+            GemmConfig(32, 64, 16, 2, 4),
+            GemmConfig(64, 64, 16, 2, 4),
+            GemmConfig(64, 64, 32, 2, 4),
+            GemmConfig(64, 64, 16, 2, 8),
+            GemmConfig(64, 64, 32, 2, 8),
+        ]
+        # The inherited conv_configs are tuned for NVIDIA smem (up to 128x256 and
+        # 128x128x128, ~64KB of f32 staging) and all OOM on Apple's 32KB
+        # threadgroup budget, flooding the autotuner with OutOfResources configs
+        # that leave aten the only choice. Replace with tiles whose double-
+        # buffered (BM*BK + BK*BN) f32 staging fits 32KB.
+        self.conv_configs = [
+            # NOTE: ConvConfig(16, 16, 16, 2, 1) is deliberately absent - that
+            # tile produces numerically WRONG, nondeterministic results on the
+            # Apple MMA path (e.g. 1x1 conv 128->64: err ~1.0). The same
+            # 16x16x16 num_warps=1 tile was also found broken in the GEMM sweep.
+            ConvConfig(64, 128, 16, 2, 4),
+            ConvConfig(64, 64, 16, 2, 4),
+            ConvConfig(32, 64, 16, 2, 4),
+            ConvConfig(64, 32, 16, 2, 4),
+            ConvConfig(32, 32, 16, 2, 2),
+            ConvConfig(32, 32, 32, 2, 2),
+            ConvConfig(64, 32, 32, 2, 4),
+        ]
+        # Keep exhaustive search aligned with the default space; we have not
+        # validated a larger Apple-GPU search space.
+        self.exhaustive_configs = self.mm_configs
 
 
 # Template-specific mixin classes
@@ -3578,3 +3685,28 @@ class MTIAMMPlusMMTemplateConfigHeuristic(
         # TODO(coconutruben): remove this once we have validated exhaustive support
         # for scaled_mm
         self.exhaustive_configs = self.mm_plus_mm_configs
+
+
+# MPS (Apple GPU / Metal) template-specific classes
+
+
+@register_template_heuristic(mm_template.uid, "mps")
+@register_template_heuristic(bmm_template.uid, "mps")
+class MPSMMTemplateConfigHeuristic(MMTemplateConfigMixin, MPSConfigHeuristic):
+    """Standard MM template heuristic for Apple GPU (MPS)"""
+
+    def should_run(self, inputs: KernelInputs) -> bool:
+        # Selecting the Triton MPS backend (mps_backend == "triton") is itself
+        # the opt-in for routing matmuls to the simdgroup-MMA Triton template, so
+        # we generate configs without also requiring the global max_autotune_gemm
+        # flag. ATEN (MPSGraph) stays in the choice set, so the autotuner still
+        # picks the faster of the two.
+        if inputs.device_type == "mps" and config.mps_backend == "triton":
+            return True
+        return super().should_run(inputs)
+
+
+@register_template_heuristic(mm_template.uid, "mps", op_name="addmm")
+@register_template_heuristic(bmm_template.uid, "mps", op_name="baddbmm")
+class MPSAddmmTemplateConfigHeuristic(AddMMConfigMixin, MPSMMTemplateConfigHeuristic):
+    """Addmm specific heuristic for Apple GPU (MPS)"""

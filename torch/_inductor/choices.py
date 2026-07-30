@@ -20,6 +20,7 @@ from .heuristics.template.triton import (
     CPUConfigHeuristic,
     CUDAConfigHeuristic,
     IS_ROCM,
+    MPSConfigHeuristic,
     MTIAConfigHeuristic,
     ROCmConfigHeuristic,
     XPUConfigHeuristic,
@@ -142,6 +143,8 @@ class InductorChoices:
             return CPUConfigHeuristic()
         elif device_type == "mtia":
             return MTIAConfigHeuristic()
+        elif device_type == "mps":
+            return MPSConfigHeuristic()
         else:
             return BaseConfigHeuristic()
 
@@ -155,6 +158,12 @@ class InductorChoices:
     def get_depthwise_conv_configs(self, device_type: str | None = "cuda") -> list[Any]:
         heuristics = self.get_config_heuristics(device_type)
         return heuristics.get_depthwise_conv_configs()
+
+    def get_depthwise_conv2d_configs(
+        self, device_type: str | None = "cuda"
+    ) -> list[Any]:
+        heuristics = self.get_config_heuristics(device_type)
+        return heuristics.get_depthwise_conv2d_configs()
 
     # Flex attention configs
     # TODO(coconutruben): break out flexattention/decode configs into the new retrieval mechanism
@@ -317,6 +326,21 @@ class InductorChoices:
                 "addmm",
             ]:
                 # TODO: deprecate this by migrating users to the new behavior
+                return True
+            # When the AppleGPU Triton backend contributes a real (non-extern)
+            # GEMM template choice, that template lowers through codegen and
+            # requires a fixed output layout. Without max_autotune_gemm set the
+            # generic gate below leaves mm/addmm flexible, which trips the
+            # "convert FlexibleLayout to FixedLayout first" assertion. Fix the
+            # layout whenever an mps Triton template is in the choice set.
+            if (
+                len(adjusted_choices) > 0
+                and adjusted_choices[0].inputs.device_type == "mps"
+                and any(
+                    not isinstance(ktc.template, ExternKernelChoice)
+                    for ktc in adjusted_choices
+                )
+            ):
                 return True
             return False
 
