@@ -2503,6 +2503,7 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
                         n,
                         k,
                         kernel_inputs.out_dtype(),
+                        kernel_inputs.device_type,
                     )
                     yield template_kwargs
             else:
@@ -2524,6 +2525,7 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
                         n,
                         k,
                         kernel_inputs.out_dtype(),
+                        kernel_inputs.device_type,
                     )
                     yield template_kwargs
 
@@ -2553,6 +2555,7 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
                     n,
                     k,
                     kernel_inputs.out_dtype(),
+                    kernel_inputs.device_type,
                 )
                 yield template_kwargs
 
@@ -2563,6 +2566,7 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
         n: sympy.Integer | sympy.Symbol,
         k: sympy.Integer | sympy.Symbol,
         out_dtype: torch.dtype,
+        device_type: str | None = None,
     ) -> dict[str, Any]:
         """
         Convert triton config to template kwargs.
@@ -2572,10 +2576,23 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
         even_k_symbolic = sympy.Eq(Mod(k, triton_config.kwargs["BLOCK_K"]), 0)
         even_k_symbolic = V.graph.sizevars.statically_known_true(even_k_symbolic)
 
+        # A ragged K makes the per-trip mask predicate loop-variant, which the MSL
+        # backend has no async copy to hide. Clamping the K index and zeroing the
+        # tail avoids that, but only pays off when N is block-aligned; a ragged N
+        # is already dominated by its own boundary split and regresses instead.
+        mps_clamp_k = (
+            not even_k_symbolic
+            and V.graph.sizevars.statically_known_true(
+                sympy.Eq(Mod(n, triton_config.kwargs["BLOCK_N"]), 0)
+            )
+            and device_type == "mps"
+        )
+
         # Build options dict
 
         options_dict = dict(
             EVEN_K=even_k_symbolic,
+            MPS_CLAMP_K=mps_clamp_k,
             USE_FAST_ACCUM=False,  # Option for _scaled_mm
             ACC_TYPE=self._get_acc_type(out_dtype),
             num_stages=triton_config.num_stages,

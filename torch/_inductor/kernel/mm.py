@@ -87,7 +87,9 @@ prims = torch.ops.prims
 mm_template = TritonTemplate(
     name="mm",
     grid=mm_grid,
-    source=load_kernel_template("triton_mm")
+    # triton_mm_mps only diverges from triton_mm when MPS_CLAMP_K is set, which
+    # _convert_config_to_template_kwargs gates on the device being mps.
+    source=load_kernel_template("triton_mm_mps")
     if (torch.version.hip is None) or triton_version >= "3.3.0"
     # FIXME: To get around rocm failures.
     # The only difference between the two templates is M >= BLOCK_M and N >= BLOCK_N checking.
