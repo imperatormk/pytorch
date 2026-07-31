@@ -718,6 +718,12 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
         # start_time and raises "End event N was not recorded after start event".
         # Committing after each pair gives every region its own command buffer and
         # a distinct timestamp. CUDA/XPU keep the cheaper single-commit path.
+        #
+        # The same completion-timestamp rule means the cache-flush `buffer.zero_()`
+        # must also be committed before the start event is recorded: otherwise the
+        # flush shares the start event's command buffer and its runtime (~1.3ms for
+        # a 256MB fill on M1 Pro) lands inside the measured region, adding a
+        # constant offset to every timing.
         sync_each_pair = device_type == "mps"
 
         # we don't want any outside errors propagating into benchmarking
@@ -743,6 +749,8 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
                 for x in grad_to_none:
                     x.grad = None
             buffer.zero_()
+            if sync_each_pair:
+                device_interface.synchronize()
             start_event.record()
             _callable()
             end_event.record()
@@ -769,6 +777,8 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
                 for x in grad_to_none:
                     x.grad = None
             buffer.zero_()
+            if sync_each_pair:
+                device_interface.synchronize()
             start_event.record()
             _callable()
             end_event.record()
