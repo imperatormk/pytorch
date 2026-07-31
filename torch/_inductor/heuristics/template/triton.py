@@ -2187,6 +2187,8 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(32, 32, 32, 2, 2),
             GemmConfig(64, 32, 16, 2, 4),
             GemmConfig(32, 64, 16, 2, 4),
+            GemmConfig(32, 64, 16, 2, 2),
+            GemmConfig(64, 32, 16, 2, 2),
             GemmConfig(64, 64, 16, 2, 4),
             GemmConfig(64, 64, 32, 2, 4),
             GemmConfig(64, 64, 16, 2, 8),
