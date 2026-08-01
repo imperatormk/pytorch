@@ -2195,6 +2195,12 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(64, 64, 32, 2, 8),
             GemmConfig(64, 128, 16, 2, 8),
             GemmConfig(64, 128, 32, 2, 8),
+            GemmConfig(128, 64, 32, 2, 8),
+            # Deeper staging trades threadgroup residency; let the autotuner
+            # settle it per shape.
+            GemmConfig(32, 32, 16, 3, 2),
+            GemmConfig(32, 64, 16, 3, 4),
+            GemmConfig(64, 64, 16, 3, 4),
         ]
         # The inherited conv_configs are tuned for NVIDIA smem (up to 128x256 and
         # 128x128x128, ~64KB of f32 staging) and all OOM on Apple's 32KB
