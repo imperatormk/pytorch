@@ -2783,6 +2783,10 @@ class BenchmarkRunner:
                 t0 = time.perf_counter()
                 for _ in range(niters):
                     fn(model, example_inputs)
+                # On an async backend the loop above only enqueues work, so
+                # without this the warmup drains inside the first timed
+                # repetition and inflates it.
+                synchronize()
                 t1 = time.perf_counter()
                 latency = t1 - t0
                 if current_device == "cuda":
@@ -2964,6 +2968,10 @@ class BenchmarkRunner:
                 t0 = time.perf_counter()
                 for _ in range(niters):
                     fn(model, example_inputs)
+                # On an async backend the loop above only enqueues work, so
+                # without this the warmup drains inside the first timed
+                # repetition and inflates it.
+                synchronize()
                 t1 = time.perf_counter()
                 latency = t1 - t0
                 if current_device == "cuda":

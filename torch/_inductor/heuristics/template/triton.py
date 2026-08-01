@@ -2170,10 +2170,11 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
       OutOfResources for over-budget configs and the autotuner discards them,
       but we keep the default config space small so we do not flood the
       autotuner with configs that always OOM.
-    - num_stages is pinned to 2: the AppleGPU backend stages A/B operands through
-      threadgroup memory with an async-copy double-buffer, and on the aligned
-      (async) GEMM path that staging hides load latency and wins ~20% over
-      num_stages=1. The kernel is latency/staging-bound, not occupancy-bound.
+    - num_stages is pinned to 2: on the MSL path only the software pipeliner
+      reads it, and that runs solely under TRITON_MSL_PIPELINE (default off), so
+      every other value emits the same kernel. Offering ns=3 configs just makes
+      the autotuner compile and benchmark duplicate binaries and pick a winner
+      out of measurement noise.
     """
 
     def __init__(self) -> None:
@@ -2196,11 +2197,6 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(64, 128, 16, 2, 8),
             GemmConfig(64, 128, 32, 2, 8),
             GemmConfig(128, 64, 32, 2, 8),
-            # Deeper staging trades threadgroup residency; let the autotuner
-            # settle it per shape.
-            GemmConfig(32, 32, 16, 3, 2),
-            GemmConfig(32, 64, 16, 3, 4),
-            GemmConfig(64, 64, 16, 3, 4),
         ]
         # The inherited conv_configs are tuned for NVIDIA smem (up to 128x256 and
         # 128x128x128, ~64KB of f32 staging) and all OOM on Apple's 32KB
