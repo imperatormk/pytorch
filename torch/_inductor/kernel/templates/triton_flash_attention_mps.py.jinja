@@ -1,0 +1,65 @@
+{{def_kernel("Q", "K", "V", "MASK")}}
+    stride_qz, stride_qh, stride_qm, stride_qk = {{stride("Q")}}
+    stride_kz, stride_kh, stride_kn, stride_kk = {{stride("K")}}
+    stride_vz, stride_vh, stride_vn, stride_vk = {{stride("V")}}
+    stride_mz, stride_mh, stride_mm, stride_mn = {{stride("MASK")}}
+
+    Z = {{size("Q", 0)}}
+    HQ = {{size("Q", 1)}}
+    Q_LEN = {{size("Q", 2)}}
+    KV_LEN = {{size("K", 2)}}
+
+    start_m = tl.program_id(0)
+    off_hz = tl.program_id(1)
+    off_z = off_hz // HQ
+    off_h = off_hz % HQ
+
+    qb = Q + off_z * stride_qz + off_h * stride_qh
+    kb = K + off_z * stride_kz + off_h * stride_kh
+    vb = V + off_z * stride_vz + off_h * stride_vh
+
+    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, HEAD_DIM)
+
+    q = tl.load(qb + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk,
+                mask=offs_m[:, None] < Q_LEN, other=0.0)
+
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+
+    for start_n in range(0, KV_LEN, BLOCK_N):
+        offs_n = start_n + tl.arange(0, BLOCK_N)
+        k = tl.load(kb + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk,
+                    mask=offs_n[:, None] < KV_LEN, other=0.0)
+        qk = tl.dot(q, tl.trans(k)) * SM_SCALE
+        if HAS_MASK:
+            mb = MASK + off_z * stride_mz + off_h * stride_mh
+            qk += tl.load(
+                mb + offs_m[:, None] * stride_mm + offs_n[None, :] * stride_mn,
+                mask=(offs_m[:, None] < Q_LEN) & (offs_n[None, :] < KV_LEN),
+                other=0.0,
+            ).to(tl.float32)
+        if IS_CAUSAL:
+            qk = tl.where(offs_m[:, None] >= offs_n[None, :], qk,
+                          float("-inf"))
+        qk = tl.where(offs_n[None, :] < KV_LEN, qk, float("-inf"))
+
+        m_new = tl.maximum(m_i, tl.max(qk, 1))
+        alpha = tl.exp(m_i - m_new)
+        p = tl.exp(qk - m_new[:, None])
+
+        v = tl.load(vb + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk,
+                    mask=offs_n[:, None] < KV_LEN, other=0.0)
+        acc = acc * alpha[:, None]
+        acc += tl.dot(p.to(v.dtype), v)
+        l_i = l_i * alpha + tl.sum(p, 1)
+        m_i = m_new
+
+    acc = acc / l_i[:, None]
+    idx_z = off_z
+    idx_h = off_h
+    idx_m = offs_m[:, None]
+    idx_d = offs_d[None, :]
+    mask = idx_m < Q_LEN
+    {{store_output(("idx_z", "idx_h", "idx_m", "idx_d"), "acc", "mask", val_shape=("BLOCK_M", "HEAD_DIM"))}}
