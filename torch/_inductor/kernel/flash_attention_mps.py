@@ -122,7 +122,14 @@ def scaled_dot_product_attention_math_for_mps(
             scale=scale, enable_gqa=enable_gqa,
         )
 
-    from ..lowering import expand
+    from ..lowering import expand, get_constant_value
+
+    # An additive mask that folds to zero contributes nothing to the scores and
+    # only costs a tile load per key block.
+    if attn_mask is not None:
+        const = get_constant_value(attn_mask)
+        if const is not None and const.value == 0:
+            attn_mask = None
 
     has_mask = attn_mask is not None
     B, H, q_len, head_dim = query.get_size()
