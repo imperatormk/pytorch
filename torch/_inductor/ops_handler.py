@@ -1192,6 +1192,51 @@ class ExtractConstantsHandler(NoopHandler):
             value=value, dtype=dtype, device=self.device or torch.get_default_device()
         )
 
+    def index_expr(self, expr: Any, dtype: torch.dtype) -> Any:
+        return expr
+
+    def ge(self, a: Any, b: Any) -> Any:
+        from torch._inductor import ir
+
+        lhs = a.value if isinstance(a, ir.Constant) else a
+        rhs = b.value if isinstance(b, ir.Constant) else b
+        if not (isinstance(lhs, sympy.Expr) or isinstance(rhs, sympy.Expr)):
+            return None
+        try:
+            lhs = sympy.sympify(lhs)
+            rhs = sympy.sympify(rhs)
+        except (TypeError, ValueError, AttributeError, sympy.SympifyError):
+            return None
+        # Iteration variables are non-negative over the whole loop extent, which
+        # is what makes a comparison against a constant decidable here without
+        # knowing the extent itself.
+        subs = {
+            s: sympy.Symbol(s.name, integer=True, nonnegative=True)
+            for s in (lhs.free_symbols | rhs.free_symbols)
+        }
+        rel = sympy.Ge(lhs.subs(subs), rhs.subs(subs))
+        if rel is sympy.true:
+            return True
+        if rel is sympy.false:
+            return False
+        return None
+
+    def where(self, cond: Any, a: Any, b: Any) -> Any:
+        if cond is True:
+            return a
+        if cond is False:
+            return b
+        from torch._inductor import ir
+
+        if (
+            isinstance(a, ir.Constant)
+            and isinstance(b, ir.Constant)
+            and a.value == b.value
+            and a.dtype == b.dtype
+        ):
+            return a
+        return None
+
 
 class SimpleCSEHandler(WrapperHandler):
     """Wraps the underlying handler with a CSE pass
