@@ -2216,6 +2216,23 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             ConvConfig(32, 32, 32, 2, 2),
             ConvConfig(64, 32, 32, 2, 4),
         ]
+        # The inherited depthwise_conv2d_configs bottom out at 16 output
+        # elements per thread (BLOCK_X * BLOCK_C / (32 * num_warps)), and on
+        # Apple that is the wrong end of the register cliff: across the
+        # mobilenetv2 depthwise layers (C = 32/96/144/192/576) the ranking
+        # tracks elements-per-thread almost perfectly, 32 lands 2.7-3.4x behind
+        # 16, and 8 beats 16 by a further 1.6-2.1x. Four goes back to being
+        # slower than 8, so 8 is an optimum rather than a trend. Add the
+        # 8-elements/thread tiles the shared list does not offer.
+        self.depthwise_conv2d_configs = [
+            DepthwiseConv2dConfig(block_x=64, block_c=16, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=32, block_c=32, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=64, block_c=32, num_stages=2, num_warps=8),
+            DepthwiseConv2dConfig(block_x=32, block_c=16, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=64, block_c=32, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=128, block_c=32, num_stages=2, num_warps=4),
+            DepthwiseConv2dConfig(block_x=64, block_c=64, num_stages=2, num_warps=4),
+        ]
         # Keep exhaustive search aligned with the default space; we have not
         # validated a larger Apple-GPU search space.
         self.exhaustive_configs = self.mm_configs
