@@ -88,6 +88,77 @@ depthwise_conv1d_template = TritonTemplate(
 
 
 @SymbolicGridFn
+def conv1x1_nchw_grid(n, c, h, w, meta, *, cdiv):
+    return (cdiv(n * h * w, meta["BLOCK_M"]), cdiv(c, meta["BLOCK_N"]), 1)
+
+
+# A 1x1 convolution is a matmul over (N*H*W, IN_C). Reaching it through
+# permute+reshape needs IN_C contiguous, which forces a physical NHWC copy of
+# the input and a matching copy of the output. Decomposing the row index into
+# (n, h, w) here addresses an NCHW input in place, so neither copy is emitted.
+conv1x1_nchw_template = TritonTemplate(
+    name="conv1x1_nchw",
+    grid=conv1x1_nchw_grid,
+    source=r"""
+{{def_kernel("X", "W")}}
+    BATCH = {{size("X", 0)}}
+    IN_C = {{size("X", 1)}}
+    IN_H = {{size("X", 2)}}
+    IN_W = {{size("X", 3)}}
+    OUT_C = {{size("W", 0)}}
+
+    stride_xn = {{stride("X", 0)}}
+    stride_xc = {{stride("X", 1)}}
+    stride_xh = {{stride("X", 2)}}
+    stride_xw = {{stride("X", 3)}}
+    stride_wc_out = {{stride("W", 0)}}
+    stride_wc_in = {{stride("W", 1)}}
+
+    HW = IN_H * IN_W
+    M = BATCH * HW
+
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    rk = tl.arange(0, BLOCK_K)
+
+    # Row m is the flattened (n, h, w); its base address needs no contiguity in
+    # the channel axis, which is what lets the input stay NCHW.
+    idx_n = rm // HW
+    rem = rm % HW
+    idx_h = rem // IN_W
+    idx_w = rem % IN_W
+    x_base = idx_n * stride_xn + idx_h * stride_xh + idx_w * stride_xw
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_TYPE)
+    for k in range(0, tl.cdiv(IN_C, BLOCK_K)):
+        kk = k * BLOCK_K + rk
+        k_valid = kk < IN_C
+        matrix_x = tl.load(
+            X + x_base[:, None] + (kk * stride_xc)[None, :],
+            mask=(rm[:, None] < M) & k_valid[None, :],
+            other=0.0,
+        )
+        matrix_w = tl.load(
+            W + (kk * stride_wc_in)[:, None] + (rn * stride_wc_out)[None, :],
+            mask=k_valid[:, None] & (rn[None, :] < OUT_C),
+            other=0.0,
+        )
+        acc += tl.dot(matrix_x, matrix_w, allow_tf32=ALLOW_TF32)
+
+    idx_nn = rm[:, None] // HW
+    idx_rem = rm[:, None] % HW
+    idx_hh = idx_rem // IN_W
+    idx_ww = idx_rem % IN_W
+    idx_c = rn[None, :]
+    mask = (rm[:, None] < M) & (rn[None, :] < OUT_C)
+    {{store_output(("idx_nn", "idx_c", "idx_hh", "idx_ww"), "acc", "mask", val_shape=("BLOCK_M", "BLOCK_N"))}}
+""",
+)
+
+
+@SymbolicGridFn
 def depthwise_conv2d_grid(n, c, h, w, meta, *, cdiv):
     return (
         cdiv(n * h * w, meta["BLOCK_X"]),
@@ -629,8 +700,25 @@ def convolution(
 
     autotuning_gemm = config.max_autotune or config.max_autotune_gemm
 
+    def x_already_channels_last():
+        try:
+            order = ir.get_stride_order(
+                V.graph.sizevars.guarding_hints_or_throw(x.get_stride())
+            )
+        except (AttributeError, NotImplementedError):
+            return False
+        return order == ir.NHWC_STRIDE_ORDER
+
+    # Rewriting to mm needs IN_C contiguous, so an NCHW input pays a physical
+    # NHWC copy in and another out. Where the templates can autotune, leave that
+    # input to the conv choices: conv1x1_nchw addresses it in place.
+    rewrite_1x1_is_free = x_already_channels_last() or not (
+        autotuning_gemm and torch._inductor.utils._use_conv_autotune_backend("TRITON")
+    )
+
     if (
         (config.conv_1x1_as_mm or (autotuning_gemm and channels_last_conv()))
+        and rewrite_1x1_is_free
         and is_ones(kernel_shape)
         and is_ones(stride)
         and is_zeros(padding)
@@ -734,6 +822,22 @@ def convolution(
             and groups == 1
         ):
             choices.append(aten_conv1x1_via_mm.bind(args, layout))
+            for cfg in V.choices.get_conv_configs(device_type)(
+                sympy_product([x.get_size()[0], *x.get_size()[2:]]),
+                out_chan,
+                in_chan,
+                dtype_size=x.get_dtype().itemsize,
+            ):
+                conv1x1_nchw_template.maybe_append_choice(
+                    choices,
+                    input_nodes=(x, weight),
+                    layout=layout,
+                    ACC_TYPE="tl.float32",
+                    ALLOW_TF32=torch.backends.cudnn.fp32_precision == "tf32",
+                    num_stages=cfg.num_stages,
+                    num_warps=cfg.num_warps,
+                    **cfg.kwargs,
+                )
 
         is_depthwise = groups > 1 and in_chan == 1 and out_chan == groups
         if is_depthwise and ndim == 1:
