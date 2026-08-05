@@ -783,15 +783,17 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
         # Budget against the measured wall time per iteration, not the kernel's
         # own runtime: the flush and the per-pair sync dominate for short
         # kernels, so dividing the budget by `estimated_timing` alone lets the
-        # loop overrun it by an order of magnitude. The floor keeps enough
-        # samples for the reported minimum to stay stable between runs, which
-        # a purely wall-time budget does not guarantee for cheap kernels.
+        # loop overrun it by an order of magnitude.
+        #
+        # Cheap kernels also need a minimum sample count for the reported
+        # minimum to be stable, but that floor only applies while the kernel is
+        # cheap. Raising it for an expensive kernel is how a 185ms addmm ends up
+        # timed 50 times, so the floor is itself capped by the budget.
         per_iter = max(estimated_timing, estimation_wall / max(estimation_iters, 1))
         if per_iter > 0:
-            benchmark_iters = max(
-                min(benchmark_iters, int(max_benchmark_duration // per_iter)),
-                min(benchmark_iters, 50),
-            )
+            budgeted = int(max_benchmark_duration // per_iter)
+            floor = 50 if per_iter <= max_benchmark_duration else 1
+            benchmark_iters = max(min(benchmark_iters, budgeted), min(benchmark_iters, floor), 1)
 
         # do the memory warmup
         for _ in range(memory_warmup_iters):
