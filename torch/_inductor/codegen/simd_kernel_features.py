@@ -164,6 +164,22 @@ class SIMDKernelFeatures:
         """True if V.ops.{op_name} is used in node_schedule"""
         return bool(self.op_counts().get(op_name))
 
+    @cache_on_self
+    def max_itemsize(self) -> int:
+        """Widest element the kernel touches, in bytes.
+
+        A persistent reduction stages the axis in shared memory at this width,
+        so an int64 index buffer doubles the footprint of an fp32 reduction.
+        """
+        sizes = [1]
+        for node in self.scheduler_nodes():
+            for access in node.read_writes.reads | node.read_writes.writes:
+                try:
+                    sizes.append(V.graph.get_dtype(access.name).itemsize)
+                except (KeyError, AttributeError):
+                    pass
+        return max(sizes)
+
     def get_mutations(self) -> OrderedSet[str]:
         mutations: OrderedSet[str] = OrderedSet()
         for node in self.scheduler_nodes():

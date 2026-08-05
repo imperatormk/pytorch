@@ -31,7 +31,7 @@ from .metrics import get_metric_table, is_metric_table_enabled
 from .runtime.hints import DeviceProperties, ReductionHint
 from .scheduler import BaseSchedulerNode, Scheduler, WhyNoFuse
 from .select_algorithm import ExternKernelChoice
-from .utils import _use_autotune_backend
+from .utils import _use_autotune_backend, get_gpu_shared_memory
 from .virtualized import V
 
 
@@ -519,6 +519,16 @@ class InductorChoices:
         # to pick the faster one.
         if config.triton.multi_kernel:
             threshold *= 16
+
+        # A persistent reduction stages the whole axis in shared memory at the
+        # kernel's widest element, so an int64 index buffer costs twice what the
+        # fp32 numel suggests. Where that does not fit there is no fallback:
+        # RBLOCK is fixed at codegen, so every config is rejected at load time
+        # and the graph fails outright rather than losing a benchmark.
+        shared_memory = get_gpu_shared_memory()
+        if shared_memory:
+            fits = shared_memory // features.max_itemsize()
+            threshold = min(threshold, fits)
 
         return V.graph.sizevars.statically_known_leq(
             features.reduction_numel, threshold
