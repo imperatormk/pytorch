@@ -105,6 +105,17 @@ log = logging.getLogger(__name__)
 
 # correctness checks struggle with fp16/tf32
 VERIFY: dict[str, Any] = {}
+# TORCHINDUCTOR_VERIFY_ALL_CHOICES=1 verifies EVERY autotuned choice against the
+# reference (choices[0]) during autotuning, not just the winning config. The
+# winner is timing-dependent, so a buggy config is otherwise only checked when
+# the autotuner happens to pick it -> flaky. This makes every emitted config
+# correctness-checked deterministically. Tolerance via *_RTOL/*_ATOL (fp16/tf32
+# need slack, hence off by default). Backend bring-up / regression gate.
+if os.environ.get("TORCHINDUCTOR_VERIFY_ALL_CHOICES") == "1":
+    VERIFY = {
+        "rtol": float(os.environ.get("TORCHINDUCTOR_VERIFY_RTOL", "1e-2")),
+        "atol": float(os.environ.get("TORCHINDUCTOR_VERIFY_ATOL", "1e-2")),
+    }
 PRINT_AUTOTUNE = True
 DEBUG = False
 
