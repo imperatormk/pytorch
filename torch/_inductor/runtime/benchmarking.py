@@ -581,6 +581,12 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
         if "L2_cache_size" in self.__dict__:
             return self.__dict__["L2_cache_size"]
 
+        # Every exit memoizes: the sysctl below forks a process, and this runs
+        # once per benchmarked launch.
+        def memo(size: int) -> int:
+            self.__dict__["L2_cache_size"] = size
+            return size
+
         device_type = _normalize_gpu_device_type(device_type)
         device_interface = get_interface_for_device(device_type)
         device = device_interface.current_device()
@@ -588,7 +594,7 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
         for attr in ("L2_cache_size", "last_level_cache_size"):
             cache_size = getattr(props, attr, None)
             if cache_size:
-                return cache_size
+                return memo(cache_size)
         # MPS exposes no cache size, and the 256MB default is ~16x the real
         # last-level cache on Apple silicon. The flush buffer is zeroed before
         # every timed launch, so an oversized guess is paid hundreds of times
@@ -606,10 +612,10 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
                 )
                 cache_size = int(out.stdout.strip())
                 if cache_size > 0:
-                    return cache_size
+                    return memo(cache_size)
             except Exception:
                 pass
-        return 256 * 1024 * 1024
+        return memo(256 * 1024 * 1024)
 
     def get_event_pairs(
         self: Self, iters: int, device_type: str | torch.device | None = None
