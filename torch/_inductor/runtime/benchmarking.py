@@ -589,6 +589,26 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
             cache_size = getattr(props, attr, None)
             if cache_size:
                 return cache_size
+        # MPS exposes no cache size, and the 256MB default is ~16x the real
+        # last-level cache on Apple silicon. The flush buffer is zeroed before
+        # every timed launch, so an oversized guess is paid hundreds of times
+        # per autotuned kernel. Unified memory means the CPU's LLC is the one
+        # the GPU shares, so sysctl is the right source.
+        if device_type == "mps":
+            try:
+                import subprocess
+
+                out = subprocess.run(
+                    ["sysctl", "-n", "hw.perflevel0.l2cachesize"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                cache_size = int(out.stdout.strip())
+                if cache_size > 0:
+                    return cache_size
+            except Exception:
+                pass
         return 256 * 1024 * 1024
 
     def get_event_pairs(
@@ -743,6 +763,7 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
 
         # estimate the runtime of `_callable`
         event_pairs = self.get_event_pairs(estimation_iters, device_type=device_type)
+        estimation_start = time.perf_counter()
         for start_event, end_event in event_pairs:
             # Clear gradients before timing (matches triton.testing.do_bench)
             if grad_to_none is not None:
@@ -757,12 +778,21 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
             if sync_each_pair:
                 device_interface.synchronize()
         device_interface.synchronize()
+        estimation_wall = (time.perf_counter() - estimation_start) * 1000
         estimated_timing = self.get_event_pairs_min_timing(event_pairs)
 
-        # adjust `benchmark_iters` to fit in the maximum benchmarking duration
-        if estimated_timing > 0:
+        # adjust `benchmark_iters` to fit in the maximum benchmarking duration.
+        # Budget against the measured wall time per iteration, not the kernel's
+        # own runtime: the flush and the per-pair sync dominate for short
+        # kernels, so dividing the budget by `estimated_timing` alone lets the
+        # loop overrun it by an order of magnitude. The floor keeps enough
+        # samples for the reported minimum to stay stable between runs, which
+        # a purely wall-time budget does not guarantee for cheap kernels.
+        per_iter = max(estimated_timing, estimation_wall / max(estimation_iters, 1))
+        if per_iter > 0:
             benchmark_iters = max(
-                min(benchmark_iters, int(max_benchmark_duration // estimated_timing)), 1
+                min(benchmark_iters, int(max_benchmark_duration // per_iter)),
+                min(benchmark_iters, 50),
             )
 
         # do the memory warmup
