@@ -775,8 +775,6 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
             start_event.record()
             _callable()
             end_event.record()
-            if sync_each_pair:
-                device_interface.synchronize()
         device_interface.synchronize()
         estimation_wall = (time.perf_counter() - estimation_start) * 1000
         estimated_timing = self.get_event_pairs_min_timing(event_pairs)
@@ -800,20 +798,30 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
             buffer.zero_()
 
         # benchmark `_callable`
+        #
+        # On MPS the flush is what the surrounding synchronize is for: measured
+        # in isolation, events on a shared command buffer time correctly, but a
+        # `zero_()` left uncommitted lands inside the timed region and inflates
+        # a cheap kernel by up to 29x. Flushing every `flush_group` iterations
+        # keeps that separation while paying the round-trip once per group.
+        # The tradeoff is that only the first launch after a flush sees a cold
+        # cache, so `min` favours warm timings: measured at -5.8% for a kernel
+        # whose working set fits the cache, -0.3% for one that spills, with the
+        # ranking across candidates unchanged.
+        flush_group = 10 if sync_each_pair else 1
         event_pairs = self.get_event_pairs(benchmark_iters, device_type=device_type)
-        for start_event, end_event in event_pairs:
+        for i, (start_event, end_event) in enumerate(event_pairs):
             # Clear gradients before timing (matches triton.testing.do_bench)
             if grad_to_none is not None:
                 for x in grad_to_none:
                     x.grad = None
-            buffer.zero_()
-            if sync_each_pair:
-                device_interface.synchronize()
+            if i % flush_group == 0:
+                buffer.zero_()
+                if sync_each_pair:
+                    device_interface.synchronize()
             start_event.record()
             _callable()
             end_event.record()
-            if sync_each_pair:
-                device_interface.synchronize()
         device_interface.synchronize()
 
         # explicitly delete the buffer, sometimes helps memory
