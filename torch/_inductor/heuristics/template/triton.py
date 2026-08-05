@@ -2212,6 +2212,7 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             ConvConfig(64, 64, 16, 2, 4),
             ConvConfig(32, 64, 16, 2, 4),
             ConvConfig(64, 32, 16, 2, 4),
+            ConvConfig(64, 32, 16, 2, 8),
             ConvConfig(32, 32, 16, 2, 2),
             ConvConfig(32, 32, 32, 2, 2),
             ConvConfig(64, 32, 32, 2, 4),
