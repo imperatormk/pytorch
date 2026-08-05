@@ -31,7 +31,7 @@ from .metrics import get_metric_table, is_metric_table_enabled
 from .runtime.hints import DeviceProperties, ReductionHint
 from .scheduler import BaseSchedulerNode, Scheduler, WhyNoFuse
 from .select_algorithm import ExternKernelChoice
-from .utils import _use_autotune_backend, get_gpu_shared_memory
+from .utils import _use_autotune_backend
 from .virtualized import V
 
 
@@ -519,16 +519,6 @@ class InductorChoices:
         # to pick the faster one.
         if config.triton.multi_kernel:
             threshold *= 16
-            # Being slower is recoverable, not fitting is not: a persistent
-            # reduction holds the whole axis, and where that exceeds the device's
-            # shared memory every config is rejected at load time and the compile
-            # dies rather than losing a benchmark. Cap the widened threshold at
-            # what one threadgroup can actually hold (Metal allows 32KB), leaving
-            # room for XBLOCK > 1 -- triton_config_reduction scales XBLOCK up
-            # from 1 while the block total stays under its target.
-            shared_memory = get_gpu_shared_memory()
-            if shared_memory:
-                threshold = min(threshold, shared_memory // 8)
 
         return V.graph.sizevars.statically_known_leq(
             features.reduction_numel, threshold
