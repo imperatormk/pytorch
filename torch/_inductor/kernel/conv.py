@@ -855,6 +855,7 @@ def convolution(
                     **cfg.kwargs,
                 )
 
+        n_choices_before_depthwise2d = len(choices)
         if is_depthwise and ndim == 2:
             depthwise2d_configs = V.choices.get_depthwise_conv2d_configs(device_type)
             for cfg in depthwise2d_configs:
@@ -874,6 +875,14 @@ def convolution(
                     num_warps=cfg.num_warps,
                     **cfg.kwargs,
                 )
+
+        # The generic conv2d template addresses a depthwise conv as a grouped
+        # GEMM whose per-group K is 1, so its MMA is almost entirely zeros. On a
+        # 7x7 C=80 layer every direct depthwise choice beat every generic one:
+        # 20.2-159.1 ms against 661.2-750.6 ms, i.e. the worst depthwise tile is
+        # still 4.2x ahead of the best generic tile. Benchmarking them costs most
+        # of a 203 s autotune and can never change the pick.
+        skip_generic_conv2d = ndim == 2 and len(choices) > n_choices_before_depthwise2d
 
         conv_configs = V.choices.get_conv_configs(device_type)
 
@@ -903,7 +912,7 @@ def convolution(
             ):
                 flat_k_variants.append(True)
 
-            if ndim == 2:
+            if ndim == 2 and not skip_generic_conv2d:
                 for flat_k in flat_k_variants:
                     conv2d_template.maybe_append_choice(
                         choices,
