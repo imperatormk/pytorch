@@ -125,11 +125,17 @@ conv1x1_nchw_template = TritonTemplate(
 
     # Row m is the flattened (n, h, w); its base address needs no contiguity in
     # the channel axis, which is what lets the input stay NCHW.
-    idx_n = rm // HW
-    rem = rm % HW
-    idx_h = rem // IN_W
-    idx_w = rem % IN_W
-    x_base = idx_n * stride_xn + idx_h * stride_xh + idx_w * stride_xw
+    if DENSE_ROWS:
+        # The (n, h, w) axes are contiguous in row-major order, so the flattened
+        # row index addresses them directly and the three div/mods -- the most
+        # expensive scalar op on this GPU -- fold away.
+        x_base = rm * stride_xw
+    else:
+        idx_n = rm // HW
+        rem = rm % HW
+        idx_h = rem // IN_W
+        idx_w = rem % IN_W
+        x_base = idx_n * stride_xn + idx_h * stride_xh + idx_w * stride_xw
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_TYPE)
     for k in range(0, tl.cdiv(IN_C, BLOCK_K)):
@@ -514,6 +520,31 @@ aten_convolution = ExternKernelChoice(
 )
 
 
+def _conv1x1_rows_are_dense(x) -> bool:
+    """Do the (n, h, w) axes tile the row index contiguously?
+
+    True lets conv1x1_nchw address row m as `m * stride_w` instead of splitting
+    it into (n, h, w). The three spatial/batch strides must form an exact nested
+    tiling with no gap, which a sliced view breaks -- a channels-last slice in
+    particular keeps the *base* tensor's row pitch, so comparing strides against
+    the view's own sizes is not enough. Require the whole (n, h, w) block to be
+    gapless: its extent must equal its element count times the innermost stride.
+    """
+    try:
+        size = V.graph.sizevars.guarding_hints_or_throw(x.get_size())
+        stride = V.graph.sizevars.guarding_hints_or_throw(x.get_stride())
+    except (AttributeError, NotImplementedError):
+        return False
+    if len(size) != 4 or len(stride) != 4:
+        return False
+    n, c, h, w = size
+    sn, sc, sh, sw = stride
+    if sw <= 0 or sh <= 0 or sn <= 0:
+        return False
+    # Nested tiling, each level exactly filling the one above it.
+    return sh == w * sw and sn == h * sh and (sw == 1 or sw == c * sc)
+
+
 def conv1x1_via_mm(x, w, *, out):
     w = torch.squeeze(torch.squeeze(w, -1), -1)
     return torch.matmul(
@@ -822,6 +853,7 @@ def convolution(
             and groups == 1
         ):
             choices.append(aten_conv1x1_via_mm.bind(args, layout))
+            dense_rows = _conv1x1_rows_are_dense(x)
             for cfg in V.choices.get_conv_configs(device_type)(
                 sympy_product([x.get_size()[0], *x.get_size()[2:]]),
                 out_chan,
@@ -834,6 +866,7 @@ def convolution(
                     layout=layout,
                     ACC_TYPE="tl.float32",
                     ALLOW_TF32=torch.backends.cudnn.fp32_precision == "tf32",
+                    DENSE_ROWS=dense_rows,
                     num_stages=cfg.num_stages,
                     num_warps=cfg.num_warps,
                     **cfg.kwargs,
