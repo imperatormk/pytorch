@@ -45,6 +45,7 @@ from torch._inductor.codecache import (
 from torch._inductor.compile_worker.subproc_pool import (
     AnyPool,
     SubprocException,
+    SubprocKind,
     SubprocPool,
 )
 from torch._inductor.compile_worker.tracked_process_pool import (
@@ -213,6 +214,17 @@ def get_compile_threads() -> int:
     return config.compile_threads
 
 
+def _subproc_kind() -> SubprocKind:
+    """Fork is unusable where the driver cannot survive it.
+
+    The Metal compiler dies in a forked child, so a fork-based worker pool on
+    MPS breaks the whole compile rather than just slowing it down.
+    """
+    if torch.backends.mps.is_available():
+        return SubprocKind.SPAWN
+    return SubprocKind.FORK
+
+
 def _process_pool_allowed() -> bool:
     # Multiprocessing daemons are not allowed to create child processes. This
     # only applies to direct multiprocessing modes: SubprocPool starts its
@@ -329,7 +341,9 @@ class AsyncCompile:
         if config.worker_start_method == "subprocess":
             # Wrapper around ProcessPoolExecutor forks in a new process we control
             pool = SubprocPool(
-                get_compile_threads(), quiesce=config.quiesce_async_compile_pool
+                get_compile_threads(),
+                kind=_subproc_kind(),
+                quiesce=config.quiesce_async_compile_pool,
             )
         else:
             if config.worker_start_method == "spawn":

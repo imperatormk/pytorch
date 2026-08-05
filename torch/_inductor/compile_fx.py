@@ -2906,6 +2906,16 @@ def compile_fx(
     NB: This function TAKES OWNERSHIP of the input ``model_`` and can potentially
     mutate it!  Make a copy if you need to preserve the original GraphModule.
     """
+    # torch.compile(model) reaches inductor through
+    # _TorchCompileInductorWrapper.__call__, which calls this directly and never
+    # goes through the registered `inductor` backend where the warmup lives. The
+    # pool then only starts booting when the first kernel calls
+    # use_process_pool(), and since that check is non-blocking every kernel
+    # compiled during the boot falls back to the serial parent path.
+    from torch._inductor.async_compile import maybe_warm_pool
+
+    maybe_warm_pool()
+
     if decompositions is not None:
         get_decomp_fn: Callable[..., dict[Any, Callable[..., Any]]] = (
             _ConstantDecompTable(decompositions)
