@@ -2221,9 +2221,14 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # Apple that is the wrong end of the register cliff: across the
         # mobilenetv2 depthwise layers (C = 32/96/144/192/576) the ranking
         # tracks elements-per-thread almost perfectly, 32 lands 2.7-3.4x behind
-        # 16, and 8 beats 16 by a further 1.6-2.1x. Four goes back to being
-        # slower than 8, so 8 is an optimum rather than a trend. Add the
-        # 8-elements/thread tiles the shared list does not offer.
+        # 16, and 8 beats 16 by a further 1.6-2.1x.
+        #
+        # Where the optimum sits below 16 is shape-dependent, so the list keeps
+        # both 8 and 4. On those 3x3 layers 4 was slower than 8, but on a 7x7
+        # C=80 layer the two fastest tiles are both BLOCK_C=16, with the 4
+        # elements/thread tile winning outright (20.2 ms vs 21.2 for 8, against
+        # 38.9 for 16). Larger kernels hold more taps live per output element,
+        # which moves the cliff down.
         self.depthwise_conv2d_configs = [
             DepthwiseConv2dConfig(block_x=64, block_c=16, num_stages=2, num_warps=4),
             DepthwiseConv2dConfig(block_x=32, block_c=32, num_stages=2, num_warps=4),
