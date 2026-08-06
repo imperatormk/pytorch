@@ -45,6 +45,14 @@ def _configs(q_len, head_dim):
                 if block_m > q_len or block_n > q_len:
                     continue
                 out.append((block_m, block_n, num_warps))
+    # A wide head spends its time in the QK dot, whose cost per MMA grows with
+    # head_dim; a narrow key block is what keeps that tile affordable.
+    if head_dim >= 128:
+        for block_m in (16, 32):
+            for num_warps in (4, 8):
+                if block_m > q_len or 16 > q_len:
+                    continue
+                out.append((block_m, 16, num_warps))
     return out or [(32, 32, 4)]
 
 
