@@ -99,6 +99,11 @@ def addmm_epilogue(dtype, alpha, beta):
     def epilogue(acc, bias):
         if alpha != 1:
             acc = V.ops.mul(acc, V.ops.constant(alpha, dtype))
+        # beta == 0 drops the bias term rather than scaling it, so a non-finite
+        # bias must not reach the multiply: 0 * NaN is NaN, but the documented
+        # result is the unbiased product.
+        if beta == 0:
+            return acc
         if beta != 1:
             bias = V.ops.mul(bias, V.ops.constant(beta, dtype))
         return V.ops.add(acc, bias)
