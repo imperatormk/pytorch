@@ -86,7 +86,8 @@ def _mps_flash_supported(query, key, value, attn_mask, dropout_p, is_causal,
             return False
         dims.append(int(d))
     head_dim = dims[3]
-    if head_dim % 8 or head_dim > 128:
+    # tl.arange(0, HEAD_DIM) requires a power of two; % 8 admits 40/72/96/120.
+    if head_dim & (head_dim - 1) or head_dim > 128:
         return False
     if dims[2] % 8 or dims[6] % 8:
         return False
