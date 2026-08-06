@@ -173,6 +173,16 @@ def tuned_mm_plus_mm(mat1, mat2, mat3, mat4, *, layout=None):
         V.choices.get_template_configs(kernel_inputs, templates_to_use, "mm_plus_mm")
     )
 
+    if not choices:
+        # The fusion is an optimization, so an empty choice set is not fatal --
+        # fall back the same way a K mismatch does. Small K leaves nothing:
+        # every mm_plus_mm config has BLOCK_K >= 16 and they are filtered to
+        # BLOCK_K < K (triton#1298, BLOCK_K == K miscompiles), so K <= 16 with
+        # aten excluded from max_autotune_gemm_backends discards all of them.
+        return lowerings[aten.add](
+            lowerings[aten.mm](mat1, mat2), lowerings[aten.mm](mat3, mat4)
+        )
+
     node, _ = autotune_select_algorithm(
         "mm_plus_mm", choices, kernel_inputs.nodes(), layout1
     )
