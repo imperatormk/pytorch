@@ -185,10 +185,16 @@ class AutotuneArgs:
             expected=expected,
         )
 
-    def verify(self, **kwargs):
-        """Verify the correctness of the benchmarking results"""
+    def verify(self, extern=False, **kwargs):
+        """Verify the correctness of the benchmarking results.
 
-        torch.testing.assert_close(self.extern.output_tensor, self.expected, **kwargs)
+        `extern` selects the same arm benchmark_choice just ran. Always reading
+        self.extern would compare a buffer the choice under test never wrote --
+        and since out and out_extern alias one storage, a triton choice
+        overwrites the reference before it is read, so correct kernels fail.
+        """
+        got = self.get_benchmark_tensors(extern).output_tensor
+        torch.testing.assert_close(got, self.expected, **kwargs)
 
 
 class PartialRender:
@@ -5093,8 +5099,15 @@ class AlgorithmSelectorCache(PersistentCache):
         out_extern = torch.as_strided(out_base, out.size(), out.stride(), out_offset)
         expected = None
         if VERIFY:
-            choices[0].benchmark(*example_inputs_extern, out=out_extern)
-            expected = out_extern.clone()
+            # The reference must run on the arm that matches choices[0]: triton
+            # choices take base pointers without the slice offset, extern ones
+            # take the offset inputs. Always using the extern pair fed a triton
+            # template the wrong addresses and made correct choices mismatch.
+            ref_extern = cls._is_extern(choices[0])
+            ref_inputs = example_inputs_extern if ref_extern else example_inputs
+            ref_out = out_extern if ref_extern else out
+            choices[0].benchmark(*ref_inputs, out=ref_out)
+            expected = ref_out.clone()
 
         return AutotuneArgs.from_choice_args(
             example_inputs,
@@ -5112,7 +5125,8 @@ class AlgorithmSelectorCache(PersistentCache):
     def benchmark_choice(
         cls, choice: ChoiceCaller, autotune_args: AutotuneArgs
     ) -> float:
-        benchmark_tensors = autotune_args.get_benchmark_tensors(cls._is_extern(choice))
+        is_extern = cls._is_extern(choice)
+        benchmark_tensors = autotune_args.get_benchmark_tensors(is_extern)
         inputs, output = benchmark_tensors.unpack()
         output.zero_()
         try:
@@ -5126,7 +5140,7 @@ class AlgorithmSelectorCache(PersistentCache):
                 device_interface.synchronize()  # shake out any CUDA errors
 
             if VERIFY and autotune_args.expected is not None:
-                autotune_args.verify(**VERIFY)
+                autotune_args.verify(extern=is_extern, **VERIFY)
             return result
         finally:
             bmreq = _benchmark_request_for_choice(choice)
