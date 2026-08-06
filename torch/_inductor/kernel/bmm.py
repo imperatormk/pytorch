@@ -279,11 +279,18 @@ def tuned_baddbmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
     """
     Lowering for autotuning aten.mm with different backends (Aten, Triton, CUTLASS, etc.)
     """
+    # beta == 0 drops the bias term rather than scaling it, so a non-finite
+    # `inp` must not reach the arithmetic: 0 * nan is nan, but baddbmm(beta=0)
+    # is defined to ignore inp entirely. The templates below fold beta into
+    # their epilogue and would compute the multiply, so short-circuit here --
+    # ahead of use_native_matmul, which is off by default and left this
+    # unreachable on every backend.
+    if beta == 0:
+        out = lowerings[aten.bmm](mat1, mat2)
+        return out if alpha == 1 else lowerings[aten.mul](alpha, out)
+
     if use_native_matmul(mat1, mat2):
-        if beta == 0:
-            arg1 = 0
-        else:
-            arg1 = lowerings[aten.mul](beta, inp)
+        arg1 = lowerings[aten.mul](beta, inp)
 
         if alpha == 0:
             arg2 = 0
