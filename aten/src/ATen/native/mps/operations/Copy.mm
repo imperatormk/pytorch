@@ -140,6 +140,15 @@ static at::Tensor& copy_from_mps_(at::Tensor& dst_, const at::Tensor& src_, bool
   auto sameMemFormat =
       src_.is_contiguous(dst_.suggest_memory_format()) && dst_.is_contiguous(dst_.suggest_memory_format());
 
+  // Deferring the wait is only sound when the destination is MPS-pinned: that
+  // buffer is allocator-tracked, so a later host read can be ordered against
+  // the blit. Unpinned host pages have no such handle, and returning early
+  // hands the caller a destination the GPU has not written yet -- .item() then
+  // reads stale memory with no way to know it must wait.
+  if (non_blocking && !at::mps::isMPSPinnedPtr(dst_.storage().data())) {
+    non_blocking = false;
+  }
+
   MPSStream* stream = getCurrentMPSStream();
   Tensor dst = dst_;
   Tensor src = src_;
