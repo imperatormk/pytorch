@@ -3756,3 +3756,15 @@ class MPSMMTemplateConfigHeuristic(MMTemplateConfigMixin, MPSConfigHeuristic):
 @register_template_heuristic(bmm_template.uid, "mps", op_name="baddbmm")
 class MPSAddmmTemplateConfigHeuristic(AddMMConfigMixin, MPSMMTemplateConfigHeuristic):
     """Addmm specific heuristic for Apple GPU (MPS)"""
+
+
+@register_template_heuristic(mm_plus_mm_template.uid, "mps")
+class MPSMMPlusMMTemplateConfigHeuristic(
+    MMPlusMMTemplateConfigMixin, MPSMMTemplateConfigHeuristic
+):
+    """MM Plus MM template heuristic for Apple GPU (MPS)"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mm_configs = self.mm_plus_mm_configs
+        self.exhaustive_configs = self.mm_plus_mm_configs
