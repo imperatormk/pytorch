@@ -159,6 +159,20 @@ class DepthwiseConv2dConfig:
 
 
 @dataclasses.dataclass
+class DepthwiseConv2dBwdWeightConfig:
+    """
+    Configuration for the depthwise conv2d weight-grad Triton template.
+    One program owns BLOCK_C channels and walks the whole batch * OUT_H * OUT_W
+    reduction axis in BLOCK_R chunks, holding one accumulator tile per tap.
+    """
+
+    block_c: int
+    block_r: int
+    num_stages: int
+    num_warps: int
+
+
+@dataclasses.dataclass
 class BlackwellGPUGemmConfig(GemmConfig):
     """
     Gemm configuration used for templates with features explicitly
@@ -810,6 +824,19 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
             DepthwiseConv2dConfig(block_x=1024, block_c=16, num_stages=2, num_warps=8),
         ]
 
+        # Depthwise conv2d weight-grad configs. The reduction is long
+        # (batch * OUT_H * OUT_W) and per-channel independent, so occupancy
+        # comes from the channel-block count alone; small BLOCK_C wins.
+        self.depthwise_conv2d_bwd_weight_configs: list[
+            DepthwiseConv2dBwdWeightConfig
+        ] = [
+            DepthwiseConv2dBwdWeightConfig(block_c=1, block_r=128, num_stages=2, num_warps=4),
+            DepthwiseConv2dBwdWeightConfig(block_c=1, block_r=256, num_stages=2, num_warps=4),
+            DepthwiseConv2dBwdWeightConfig(block_c=2, block_r=128, num_stages=2, num_warps=4),
+            DepthwiseConv2dBwdWeightConfig(block_c=2, block_r=256, num_stages=2, num_warps=4),
+            DepthwiseConv2dBwdWeightConfig(block_c=4, block_r=128, num_stages=2, num_warps=4),
+        ]
+
         self.flex_attn_fwd_autotune_configs: list[FlexConfig] = [
             FlexConfig(128, 64, 3, 4),
             FlexConfig(128, 128, 3, 4),
@@ -1223,6 +1250,20 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
                 num_warps=cfg.num_warps,
             )
             for cfg in self.depthwise_conv2d_configs
+        ]
+
+    def get_depthwise_conv2d_bwd_weight_configs(self) -> list[TritonConfig]:
+        """Return TritonConfig list for depthwise conv2d weight-grad autotuning."""
+        return [
+            TritonConfig(
+                {
+                    "BLOCK_C": cfg.block_c,
+                    "BLOCK_R": cfg.block_r,
+                },
+                num_stages=cfg.num_stages,
+                num_warps=cfg.num_warps,
+            )
+            for cfg in self.depthwise_conv2d_bwd_weight_configs
         ]
 
     # Flex attn helpers

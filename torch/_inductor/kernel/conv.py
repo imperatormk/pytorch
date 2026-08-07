@@ -204,6 +204,19 @@ depthwise_conv1d_bwd_input_template = TritonTemplate(
     cache_codegen_enabled_for_template=True,
 )
 
+
+@SymbolicGridFn
+def depthwise_conv2d_bwd_weight_grid(c, one, kh, kw, meta, *, cdiv):
+    return (cdiv(c, meta["BLOCK_C"]), 1, 1)
+
+
+depthwise_conv2d_bwd_weight_template = TritonTemplate(
+    name="depthwise_conv2d_bwd_weight",
+    grid=depthwise_conv2d_bwd_weight_grid,
+    source=load_kernel_template("triton_depthwise_conv2d_bwd_weight"),
+    cache_codegen_enabled_for_template=True,
+)
+
 # Set to "A" to suppress the flat-K conv choices (used to A/B the template).
 CONV_AB_VARIANT = os.environ.get("CONV_AB_VARIANT", "B")
 
@@ -1475,12 +1488,45 @@ def convolution_backward_lowering(
             and not transposed
             and is_zeros(output_padding)
         ):
+            is_depthwise_dw = (
+                ndim == 2 and groups > 1 and in_chan == 1 and out_chan == groups
+            )
+            if is_depthwise_dw:
+                kk = kernel_shape[0] * kernel_shape[1]
+                for dcfg in V.choices.get_depthwise_conv2d_bwd_weight_configs(
+                    device_type
+                ):
+                    has_triton_dw_choices = True
+                    depthwise_conv2d_bwd_weight_template.maybe_append_choice(
+                        choices_dw,
+                        input_nodes=(input, grad_out),
+                        layout=layout_dw,
+                        KERNEL_H=kernel_shape[0],
+                        KERNEL_W=kernel_shape[1],
+                        STRIDE_H=stride[0],
+                        STRIDE_W=stride[1],
+                        PADDING_H=padding[0],
+                        PADDING_W=padding[1],
+                        DILATION_H=dilation[0],
+                        DILATION_W=dilation[1],
+                        NTAP_P2=max(1 << (kk - 1).bit_length(), 1),
+                        num_stages=dcfg.num_stages,
+                        num_warps=dcfg.num_warps,
+                        **dcfg.kwargs,
+                    )
+
             for cfg in conv_configs(
                 sympy_product([input.get_size()[0], *input.get_size()[2:]]),
                 out_chan,
                 in_chan,
                 dtype_size=dtype_size,
             ):
+                # The generic template addresses a depthwise dw as a grouped
+                # GEMM whose per-group K is 1, so its MMA is almost entirely
+                # zeros (4.5-14.1x behind the aten fallback on the mnv2
+                # depthwise layers); benchmarking it cannot change the pick.
+                if is_depthwise_dw and has_triton_dw_choices:
+                    break
                 if ndim == 2:
                     has_triton_dw_choices = True
                     conv2d_bwd_weight_template.maybe_append_choice(

@@ -1,0 +1,79 @@
+{{def_kernel("X", "GO")}}
+    # Depthwise conv2d weight-grad. One program owns BLOCK_C channels and walks
+    # the whole BATCH * OUT_H * OUT_W reduction in BLOCK_R chunks, holding one
+    # (BLOCK_C, BLOCK_R) accumulator per tap; the only cross-lane reduction is
+    # a single tl.sum per tap at the end. The block is channel-slow / row-fast
+    # so adjacent lanes read adjacent device addresses -- the K*K re-reads of X
+    # are absorbed by the cache instead of costing per-lane scalar issues.
+    # Single-pass and deterministic: no split reduction, no atomics.
+
+    BATCH = {{size("X", 0)}}
+    CHANNELS = {{size("X", 1)}}
+    IN_H = {{size("X", 2)}}
+    IN_W = {{size("X", 3)}}
+    OUT_H = {{size("GO", 2)}}
+    OUT_W = {{size("GO", 3)}}
+
+    stride_xn = {{stride("X", 0)}}
+    stride_xc = {{stride("X", 1)}}
+    stride_xh = {{stride("X", 2)}}
+    stride_xw = {{stride("X", 3)}}
+
+    stride_gn = {{stride("GO", 0)}}
+    stride_gc = {{stride("GO", 1)}}
+    stride_gh = {{stride("GO", 2)}}
+    stride_gw = {{stride("GO", 3)}}
+
+    pid_c = tl.program_id(0).to(INDEX_DTYPE)
+    c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    c_mask = c_offs < CHANNELS
+    R_TOTAL = BATCH * OUT_H * OUT_W
+
+{% for t in range(KERNEL_H * KERNEL_W) %}
+    acc_{{t}} = tl.zeros((BLOCK_C, BLOCK_R), dtype=tl.float32)
+{% endfor %}
+
+    for r0 in range(0, R_TOTAL, BLOCK_R):
+        r = r0 + tl.arange(0, BLOCK_R).to(INDEX_DTYPE)
+        r_mask = r < R_TOTAL
+        ow = r % OUT_W
+        nh = r // OUT_W
+        oh = nh % OUT_H
+        n = nh // OUT_H
+
+        g = tl.load(
+            GO + (c_offs * stride_gc)[:, None]
+            + (n * stride_gn + oh * stride_gh + ow * stride_gw)[None, :],
+            mask=c_mask[:, None] & r_mask[None, :], other=0.0,
+        ).to(tl.float32)
+
+        base_h = oh * STRIDE_H - PADDING_H
+        base_w = ow * STRIDE_W - PADDING_W
+        x_c = (c_offs * stride_xc)[:, None]
+        x_r = n * stride_xn + base_h * stride_xh + base_w * stride_xw
+{% for t in range(KERNEL_H * KERNEL_W) %}
+{% set i = t // KERNEL_W %}{% set j = t % KERNEL_W %}
+        h_in = base_h + {{i}} * DILATION_H
+        w_in = base_w + {{j}} * DILATION_W
+        ok = (h_in >= 0) & (h_in < IN_H) & (w_in >= 0) & (w_in < IN_W) & r_mask
+        xv = tl.load(
+            X + x_c
+            + (x_r + {{i}} * DILATION_H * stride_xh + {{j}} * DILATION_W * stride_xw)[None, :],
+            mask=c_mask[:, None] & ok[None, :], other=0.0,
+        ).to(tl.float32)
+        acc_{{t}} += xv * g
+{% endfor %}
+
+    taps = tl.arange(0, NTAP_P2)
+    acc = tl.zeros((NTAP_P2, BLOCK_C), dtype=tl.float32)
+{% for t in range(KERNEL_H * KERNEL_W) %}
+    acc += tl.where((taps == {{t}})[:, None], tl.sum(acc_{{t}}, axis=1)[None, :], 0.0)
+{% endfor %}
+
+    idx_c = c_offs[None, :]
+    idx_zero = (taps * 0)[:, None]
+    idx_i = (taps // KERNEL_W)[:, None]
+    idx_j = (taps % KERNEL_W)[:, None]
+    mask = (taps < KERNEL_H * KERNEL_W)[:, None] & c_mask[None, :]
+
+    {{store_output(("idx_c", "idx_zero", "idx_i", "idx_j"), "acc", "mask", val_shape=("NTAP_P2", "BLOCK_C"))}}
