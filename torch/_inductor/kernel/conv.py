@@ -187,6 +187,23 @@ depthwise_conv2d_bwd_input_template = TritonTemplate(
     cache_codegen_enabled_for_template=True,
 )
 
+
+@SymbolicGridFn
+def depthwise_conv1d_bwd_grid(n, c, l, meta, *, cdiv):
+    return (
+        cdiv(n * l, meta["BLOCK_X"]),
+        cdiv(c, meta["BLOCK_C"]),
+        1,
+    )
+
+
+depthwise_conv1d_bwd_input_template = TritonTemplate(
+    name="depthwise_conv1d_bwd_input",
+    grid=depthwise_conv1d_bwd_grid,
+    source=load_kernel_template("triton_depthwise_conv1d_bwd_input"),
+    cache_codegen_enabled_for_template=True,
+)
+
 # Set to "A" to suppress the flat-K conv choices (used to A/B the template).
 CONV_AB_VARIANT = os.environ.get("CONV_AB_VARIANT", "B")
 
@@ -1513,12 +1530,24 @@ def convolution_backward_lowering(
             and not transposed
             and is_zeros(output_padding)
         ):
-            is_depthwise_dx = (
-                ndim == 2
-                and groups > 1
-                and in_chan == 1
-                and out_chan == groups
-            )
+            is_depthwise = groups > 1 and in_chan == 1 and out_chan == groups
+            if is_depthwise and ndim == 1:
+                for dcfg in V.choices.get_depthwise_conv2d_configs(device_type):
+                    has_triton_dx_choices = True
+                    depthwise_conv1d_bwd_input_template.maybe_append_choice(
+                        choices_dx,
+                        input_nodes=(grad_out, weight),
+                        layout=layout_dx,
+                        KERNEL_SIZE=kernel_shape[0],
+                        CONV_STRIDE=stride[0],
+                        PADDING=padding[0],
+                        DILATION=dilation[0],
+                        num_stages=dcfg.num_stages,
+                        num_warps=dcfg.num_warps,
+                        **dcfg.kwargs,
+                    )
+
+            is_depthwise_dx = is_depthwise and ndim == 2
             if is_depthwise_dx:
                 for dcfg in V.choices.get_depthwise_conv2d_configs(device_type):
                     has_triton_dx_choices = True

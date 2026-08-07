@@ -1,0 +1,100 @@
+{{def_kernel("X", "W")}}
+    # Depthwise conv1d grad-input, direct adjoint form: for each dx position,
+    # gather the grad_output positions ol = (il + P - k*D) / S that hit it,
+    # masking non-divisible and out-of-range taps. At CONV_STRIDE==1 the
+    # division and divisibility test fold away and this is the forward conv
+    # with rotated taps. X is grad_output; the output layout is the original
+    # input's.
+
+    BATCH = {{size("X", 0)}}
+    CHANNELS = {{size("X", 1)}}
+    GO_L = {{size("X", 2)}}
+    OUT_L = {{size(None, 2)}}
+
+    stride_xn = {{stride("X", 0)}}
+    stride_xc = {{stride("X", 1)}}
+    stride_xl = {{stride("X", 2)}}
+
+    stride_wc = {{stride("W", 0)}}
+    stride_wk = {{stride("W", 2)}}
+
+    pid_x = tl.program_id(0).to(INDEX_DTYPE)
+    pid_c = tl.program_id(1).to(INDEX_DTYPE)
+
+    x_offs = pid_x * BLOCK_X + tl.arange(0, BLOCK_X)
+    c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+
+    idx_y_l = x_offs % OUT_L
+    idx_n = x_offs // OUT_L
+
+    x_mask = x_offs < (BATCH * OUT_L)
+    c_mask = c_offs < CHANNELS
+
+    num_l0 = idx_y_l + PADDING
+
+    in_nc = (idx_n * stride_xn)[:, None] + (c_offs * stride_xc)[None, :]
+
+    acc = tl.zeros((BLOCK_X, BLOCK_C), dtype=tl.float32)
+
+    if CONV_STRIDE == 1:
+        for k in range(KERNEL_SIZE):
+            num_l = num_l0 - k * DILATION
+            l_ok = (num_l >= 0) & (num_l < GO_L)
+
+            wk = tl.load(
+                W + c_offs * stride_wc + k * stride_wk,
+                mask=c_mask,
+                other=0.0,
+            ).to(tl.float32)
+
+            x_vals = tl.load(
+                X + in_nc + (num_l * stride_xl)[:, None],
+                mask=x_mask[:, None] & l_ok[:, None] & c_mask[None, :],
+                other=0.0,
+            ).to(tl.float32)
+            acc += x_vals * wk[None, :]
+    elif DILATION == 1:
+        # Strided: only taps with (il + P - k) divisible by S contribute, so
+        # walk the ceil(K/S) hitting grad_output positions directly and gather
+        # the per-lane tap index num - ol*S.
+        ol_hi = num_l0 // CONV_STRIDE
+        for t in range((KERNEL_SIZE + CONV_STRIDE - 1) // CONV_STRIDE):
+            ol = ol_hi - t
+            tap = num_l0 - ol * CONV_STRIDE
+            l_ok = (ol >= 0) & (ol < GO_L) & (tap < KERNEL_SIZE)
+
+            w_ptrs = W + (c_offs * stride_wc)[None, :] + (tap * stride_wk)[:, None]
+            mask_w = c_mask[None, :] & (tap < KERNEL_SIZE)[:, None]
+            wk = tl.load(w_ptrs, mask=mask_w, other=0.0).to(tl.float32)
+
+            x_vals = tl.load(
+                X + in_nc + (ol * stride_xl)[:, None],
+                mask=x_mask[:, None] & l_ok[:, None] & c_mask[None, :],
+                other=0.0,
+            ).to(tl.float32)
+            acc += x_vals * wk
+    else:
+        for k in range(KERNEL_SIZE):
+            num_l = num_l0 - k * DILATION
+            ol = num_l // CONV_STRIDE
+            l_ok = (num_l >= 0) & (num_l == ol * CONV_STRIDE) & (ol < GO_L)
+
+            wk = tl.load(
+                W + c_offs * stride_wc + k * stride_wk,
+                mask=c_mask,
+                other=0.0,
+            ).to(tl.float32)
+
+            x_vals = tl.load(
+                X + in_nc + (ol * stride_xl)[:, None],
+                mask=x_mask[:, None] & l_ok[:, None] & c_mask[None, :],
+                other=0.0,
+            ).to(tl.float32)
+            acc += x_vals * wk[None, :]
+
+    mask = x_mask[:, None] & c_mask[None, :]
+    idx_n = idx_n[:, None]
+    idx_c = c_offs[None, :]
+    idx_l = idx_y_l[:, None]
+
+    {{store_output(("idx_n", "idx_c", "idx_l"), "acc", "mask", val_shape=("BLOCK_X", "BLOCK_C"))}}
