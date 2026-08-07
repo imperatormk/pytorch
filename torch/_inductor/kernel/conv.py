@@ -180,6 +180,13 @@ depthwise_conv2d_template = TritonTemplate(
     cache_codegen_enabled_for_template=True,
 )
 
+depthwise_conv2d_bwd_input_template = TritonTemplate(
+    name="depthwise_conv2d_bwd_input",
+    grid=depthwise_conv2d_grid,
+    source=load_kernel_template("triton_depthwise_conv2d_bwd_input"),
+    cache_codegen_enabled_for_template=True,
+)
+
 # Set to "A" to suppress the flat-K conv choices (used to A/B the template).
 CONV_AB_VARIANT = os.environ.get("CONV_AB_VARIANT", "B")
 
@@ -189,8 +196,8 @@ def _flat_k_enabled() -> bool:
 
 
 LOOP_BODY_2D = """
-        idx_x_h = i - PADDING_H + idx_y_h * STRIDE_H
-        idx_x_w = j - PADDING_W + idx_y_w * STRIDE_W
+        idx_x_h = i * DILATION_H - PADDING_H + idx_y_h * STRIDE_H
+        idx_x_w = j * DILATION_W - PADDING_W + idx_y_w * STRIDE_W
         idx_x_c = tl.arange(0, BLOCK_K) + k
 
         x_ptrs = x_base + (
@@ -241,8 +248,8 @@ LOOP_BODY_2D_FLAT = """
         j = ij % KERNEL_W
         k_valid = kk < KKC
 
-        idx_x_h = flat_yh[:, None] + i[None, :]
-        idx_x_w = flat_yw[:, None] + j[None, :]
+        idx_x_h = flat_yh[:, None] + (i * DILATION_H)[None, :]
+        idx_x_w = flat_yw[:, None] + (j * DILATION_W)[None, :]
 
         x_ptrs = x_base + (
             idx_x_h * stride_xh
@@ -358,10 +365,10 @@ conv2d_template = TritonTemplate(
     + """
 {% endif %}
 
+    # idx_y_w/idx_y_h/idx_n are the mixed-radix digits of nhw, so each is in
+    # range exactly when nhw is; one bound replaces the three.
     mask = (
-        (idx_n < BATCH)[:, None]
-        & (idx_y_h < OUT_H)[:, None]
-        & (idx_y_w < OUT_W)[:, None]
+        (nhw < BATCH * OUT_H * OUT_W)[:, None]
         & (idx_y_c < GROUP_OUT_C)[None, :]
     )
     idx_n = idx_n[:, None]
@@ -375,9 +382,9 @@ conv2d_template = TritonTemplate(
 )
 
 LOOP_BODY_3D = """
-        idx_x_d = d - PADDING_D + idx_y_d * STRIDE_D
-        idx_x_h = i - PADDING_H + idx_y_h * STRIDE_H
-        idx_x_w = j - PADDING_W + idx_y_w * STRIDE_W
+        idx_x_d = d * DILATION_D - PADDING_D + idx_y_d * STRIDE_D
+        idx_x_h = i * DILATION_H - PADDING_H + idx_y_h * STRIDE_H
+        idx_x_w = j * DILATION_W - PADDING_W + idx_y_w * STRIDE_W
         idx_x_c = tl.arange(0, BLOCK_K) + k
 
         x_ptrs = x_base + (
@@ -494,11 +501,10 @@ conv3d_template = TritonTemplate(
     + """
 {% endif %}
 
+    # idx_y_w/idx_y_h/idx_y_d/idx_n are the mixed-radix digits of ndhw, so each
+    # is in range exactly when ndhw is; one bound replaces the four.
     mask = (
-        (idx_n < BATCH)[:, None]
-        & (idx_y_d < OUT_D)[:, None]
-        & (idx_y_h < OUT_H)[:, None]
-        & (idx_y_w < OUT_W)[:, None]
+        (ndhw < BATCH * OUT_D * OUT_H * OUT_W)[:, None]
         & (idx_y_c < GROUP_OUT_C)[None, :]
     )
     idx_n = idx_n[:, None]
@@ -543,6 +549,41 @@ def _conv1x1_rows_are_dense(x) -> bool:
         return False
     # Nested tiling, each level exactly filling the one above it.
     return sh == w * sw and sn == h * sh and (sw == 1 or sw == c * sc)
+
+
+def _use_conv_autotune_backend_aten() -> bool:
+    """Is aten an allowed conv autotune backend?
+
+    conv1x1_via_mm calls aten matmul, so it must follow the conv backend list
+    rather than the Triton block it sits in. Naming ATEN in the list is an
+    explicit request and outranks the force-Triton default: otherwise a run that
+    asked for aten would silently get it banned here.
+    """
+    return torch._inductor.utils._use_conv_autotune_backend("ATEN")
+
+
+def _nhwc_permute_is_dense(size, stride) -> bool:
+    """Is permute(0, 2, 3, 1) of this layout contiguous?
+
+    conv1x1_via_mm writes the NHWC permutation of `out`. When the permuted
+    input is contiguous, matmul reshapes to 2D and rejects a strided out view,
+    which throws for batch > 1. Only a channels-last output is safe.
+    """
+    if len(size) != 4 or len(stride) != 4:
+        return False
+    _, c, h, w = size
+    sn, sc, sh, sw = stride
+    # NHWC: channel stride 1, then w, h, n each exactly tiling the level above.
+    return sc == 1 and sw == c and sh == w * sw and sn == h * sh
+
+
+def _conv1x1_via_mm_out_is_dense(layout) -> bool:
+    try:
+        size = V.graph.sizevars.guarding_hints_or_throw(layout.size)
+        stride = V.graph.sizevars.guarding_hints_or_throw(layout.stride)
+    except (AttributeError, NotImplementedError):
+        return False
+    return _nhwc_permute_is_dense(size, stride)
 
 
 def conv1x1_via_mm(x, w, *, out):
@@ -661,14 +702,11 @@ def convolution(
     # Need use hint for triton template since the template does not
     # work with a dynamic shape.
     #
-    # Dilation must also be guarded for transposed convolutions because the
-    # backward-input template substitutes DILATION_H/W as tl.constexpr.
-    # For non-transposed convolutions the forward template gates on
-    # dilation==1, so guarding is unnecessary.
+    # Dilation is substituted into the forward and backward-input templates as
+    # tl.constexpr, so it needs a hint like stride and padding.
     stride = tuple(V.graph.sizevars.guard_int_seq(stride))
     padding = tuple(V.graph.sizevars.guard_int_seq(padding))
-    if transposed:
-        dilation = tuple(V.graph.sizevars.guard_int_seq(dilation))
+    dilation = tuple(V.graph.sizevars.guard_int_seq(dilation))
 
     kwargs: ConvLayoutParams = {
         "stride": stride,
@@ -737,7 +775,12 @@ def convolution(
                 V.graph.sizevars.guarding_hints_or_throw(x.get_stride())
             )
         except (AttributeError, NotImplementedError):
-            return False
+            # An unrealized pointwise input cannot report a stride yet, but when
+            # layout optimization is on this conv's input is converted to
+            # channels-last below, so the rewrite is still free. Answering False
+            # here left every 1x1 whose producer was unrealized on the conv
+            # template, which is ~1.5x slower than the mm it would rewrite to.
+            return bool(V.graph.layout_opt) and ndim == 2
         return order == ir.NHWC_STRIDE_ORDER
 
     # Rewriting to mm needs IN_C contiguous, so an NCHW input pays a physical
@@ -838,7 +881,6 @@ def convolution(
         torch._inductor.utils._use_conv_autotune_backend("TRITON")
         and use_triton_template(layout)
         # templates only support these:
-        and is_ones(dilation)
         and not transposed
         and is_zeros(output_padding)
         # there are some odd models where this check fails (e.g. shufflenet_v2_x1_0)
@@ -852,7 +894,14 @@ def convolution(
             and is_zeros(padding)
             and groups == 1
         ):
-            choices.append(aten_conv1x1_via_mm.bind(args, layout))
+            # conv1x1_via_mm is an aten matmul offered from the Triton block, so
+            # a run that banned aten from conv autotune would get it back here.
+            # It also writes through out.permute(0, 2, 3, 1), which matmul
+            # rejects when that view is not dense.
+            if _use_conv_autotune_backend_aten() and _conv1x1_via_mm_out_is_dense(
+                layout
+            ):
+                choices.append(aten_conv1x1_via_mm.bind(args, layout))
             dense_rows = _conv1x1_rows_are_dense(x)
             for cfg in V.choices.get_conv_configs(device_type)(
                 sympy_product([x.get_size()[0], *x.get_size()[2:]]),
@@ -873,7 +922,8 @@ def convolution(
                 )
 
         is_depthwise = groups > 1 and in_chan == 1 and out_chan == groups
-        if is_depthwise and ndim == 1:
+        # depthwise_conv1d_template has no DILATION parameter.
+        if is_depthwise and ndim == 1 and is_ones(dilation):
             depthwise_configs = V.choices.get_depthwise_conv_configs(device_type)
             for cfg in depthwise_configs:
                 depthwise_conv1d_template.maybe_append_choice(
@@ -958,6 +1008,8 @@ def convolution(
                         STRIDE_W=stride[1],
                         PADDING_H=padding[0],
                         PADDING_W=padding[1],
+                        DILATION_H=dilation[0],
+                        DILATION_W=dilation[1],
                         GROUPS=groups,
                         # TODO(jansel): try unroll for bigger kernels once fixed:
                         #               https://github.com/triton-lang/triton/issues/1254
@@ -981,6 +1033,9 @@ def convolution(
                     PADDING_D=padding[0],
                     PADDING_H=padding[1],
                     PADDING_W=padding[2],
+                    DILATION_D=dilation[0],
+                    DILATION_H=dilation[1],
+                    DILATION_W=dilation[2],
                     GROUPS=groups,
                     # TODO(jansel): try unroll for bigger kernels once fixed:
                     #               https://github.com/triton-lang/triton/issues/1254
@@ -1332,10 +1387,8 @@ def convolution_backward_lowering(
 
     out_chan, in_chan, *kernel_shape = V.graph.sizevars.guard_int_seq(weight.get_size())
 
-    # The Triton bwd templates substitute DILATION_H/W into the generated
-    # kernel source, so they must be concrete Python ints. The fwd template
-    # gates on is_ones(dilation) and hard-codes dilation=1, so it can skip
-    # this guard.
+    # The Triton templates substitute DILATION_H/W into the generated kernel
+    # source, so they must be concrete Python ints.
     stride = tuple(V.graph.sizevars.guard_int_seq(stride))
     padding = tuple(V.graph.sizevars.guard_int_seq(padding))
     dilation = tuple(V.graph.sizevars.guard_int_seq(dilation))
@@ -1460,6 +1513,32 @@ def convolution_backward_lowering(
             and not transposed
             and is_zeros(output_padding)
         ):
+            is_depthwise_dx = (
+                ndim == 2
+                and groups > 1
+                and in_chan == 1
+                and out_chan == groups
+            )
+            if is_depthwise_dx:
+                for dcfg in V.choices.get_depthwise_conv2d_configs(device_type):
+                    has_triton_dx_choices = True
+                    depthwise_conv2d_bwd_input_template.maybe_append_choice(
+                        choices_dx,
+                        input_nodes=(grad_out, weight),
+                        layout=layout_dx,
+                        KERNEL_H=kernel_shape[0],
+                        KERNEL_W=kernel_shape[1],
+                        PADDING_H=padding[0],
+                        PADDING_W=padding[1],
+                        STRIDE_H=stride[0],
+                        STRIDE_W=stride[1],
+                        DILATION_H=dilation[0],
+                        DILATION_W=dilation[1],
+                        num_stages=dcfg.num_stages,
+                        num_warps=dcfg.num_warps,
+                        **dcfg.kwargs,
+                    )
+
             # TODO: Use the autotune configuration specific to backward convolution.
             for cfg in conv_configs(
                 sympy_product([input.get_size()[0], *input.get_size()[2:]]),

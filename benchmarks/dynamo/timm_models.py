@@ -269,6 +269,7 @@ class TimmRunner(BenchmarkRunner):
             use_test_size=not is_training,
         )
         input_size = data_config["input_size"]
+        print(TIMM_MODELS)
         recorded_batch_size = TIMM_MODELS[model_name]
 
         batch_size_divisors = self._batch_size["divisors"]

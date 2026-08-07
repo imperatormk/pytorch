@@ -2184,6 +2184,11 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # conversion fits inside the 32KB threadgroup budget.
         self.mm_configs = [
             GemmConfig(16, 16, 16, 2, 1),
+            # Narrow-N tile for skinny GEMMs whose N is not a multiple of 32:
+            # ConvNeXt's FFN down-projection (M~4e5, K=320, N=80) leaves
+            # BLOCK_N=32 with a ragged 2.5-tile N axis; BLOCK_N=16 tiles it
+            # exactly and measures ~6% ahead there (and at aten parity).
+            GemmConfig(64, 16, 16, 2, 2),
             GemmConfig(32, 32, 16, 2, 2),
             GemmConfig(32, 32, 32, 2, 2),
             GemmConfig(64, 32, 16, 2, 4),
@@ -2216,6 +2221,24 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             ConvConfig(32, 32, 16, 2, 2),
             ConvConfig(32, 32, 32, 2, 2),
             ConvConfig(64, 32, 32, 2, 4),
+            # Deep-channel, small-spatial convs are reduction-bound and the rest
+            # of the list tops out at BLOCK_K=32, leaving its best tile ~1.9x off
+            # on BiRefNet's IC=3072-5760 8x8 layers. Staging is
+            # (32*64 + 64*32)*4 = 16KB, half the budget.
+            ConvConfig(32, 32, 64, 2, 8),
+            # Conv throughput tracks resident threadgroups, which is set by the
+            # (BM*BK + BK*BN) staging footprint against the 32KB cap: at
+            # BM64/BN64/BK16 (8KB, 4 resident) these layers reach only 38% of the
+            # MMA ceiling. A tall-narrow tile keeps the footprint low while
+            # giving each threadgroup more rows, and measures 1.07-1.34x ahead
+            # across BiRefNet's conv shapes.
+            ConvConfig(128, 32, 16, 2, 4),
+            ConvConfig(128, 64, 16, 2, 8),
+            # A narrow N tile for convs whose output-channel count is small or
+            # not a multiple of 32: the stem (OUT_C=80) leaves BLOCK_N=32 with a
+            # ragged 2.5-tile N axis, and BLOCK_N=16 measures 1.20x ahead there.
+            ConvConfig(32, 16, 16, 2, 2),
+            ConvConfig(64, 16, 16, 2, 4),
         ]
         # The inherited depthwise_conv2d_configs bottom out at 16 output
         # elements per thread (BLOCK_X * BLOCK_C / (32 * num_warps)), and on

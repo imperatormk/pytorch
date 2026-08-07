@@ -11,6 +11,7 @@ import re
 import tempfile
 import time
 import unittest
+import unittest.mock
 from collections.abc import Callable
 from unittest import mock
 from unittest.mock import patch
@@ -1261,6 +1262,35 @@ class TestMaxAutotune(TestCase):
 
             FileCheck().check_not("extern_kernels.convolution").run(code[0])
             self.assertEqual(conv1x1(input_tensor), out, atol=1e-2, rtol=0)
+
+    def test_conv1x1_via_mm_requires_dense_permuted_out(self):
+        # conv1x1_via_mm writes through out.permute(0, 2, 3, 1). matmul reshapes
+        # to 2D when the permuted input is contiguous and then rejects a strided
+        # out= view, so the choice is only valid for a channels-last output.
+        from torch._inductor.kernel.conv import _nhwc_permute_is_dense
+
+        size = [4, 8, 9, 9]
+        channels_last = list(torch.empty(size).to(memory_format=torch.channels_last).stride())
+        contiguous = list(torch.empty(size).stride())
+        self.assertTrue(_nhwc_permute_is_dense(size, channels_last))
+        self.assertFalse(_nhwc_permute_is_dense(size, contiguous))
+
+    def test_conv1x1_via_mm_follows_conv_backend_list(self):
+        # conv1x1_via_mm is an aten matmul offered from the Triton block, so a
+        # conv autotune that excludes aten must not get it back.
+        from torch._inductor.kernel.conv import _use_conv_autotune_backend_aten
+
+        with config.patch({"max_autotune_conv_backends": "TRITON"}):
+            self.assertFalse(_use_conv_autotune_backend_aten())
+        with config.patch({"max_autotune_conv_backends": "ATEN,TRITON"}):
+            self.assertTrue(_use_conv_autotune_backend_aten())
+            # Naming ATEN in the list is explicit and must outrank the
+            # force-Triton default, or a run that asked for aten gets it
+            # silently banned here.
+            with unittest.mock.patch.dict(
+                os.environ, {"TORCHINDUCTOR_MPS_FORCE_TRITON_CONV": "1"}
+            ):
+                self.assertTrue(_use_conv_autotune_backend_aten())
 
     @fresh_cache()
     @config.patch(max_autotune=True, max_fusion_size=2)

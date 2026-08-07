@@ -587,6 +587,11 @@ def synchronize():
     pass
 
 
+# Set by main() when --device-event-timing is passed: returns a fresh
+# (start, end) pair of timing-enabled device events for one timed region.
+_device_event_timer = None
+
+
 def summarize_graph_break(filename):
     """
     Sorts and de-dupes the graphs breaks on the reason string. Note that this
@@ -709,6 +714,18 @@ def timed(
                 break
         return t
 
+    # Wall-clock charges the measured region for host scheduling too, so an
+    # unrelated busy CPU moves the reported ratio while the kernels are
+    # untouched (measured on MPS under load: 0.5% spread on device events vs
+    # 1.6% on perf_counter, same kernel). Device events time the GPU alone.
+    # They also *only* time the GPU -- on a host-bound step that is a smaller
+    # number, not the same number more precisely -- so this stays opt-in and
+    # results are not comparable across the two modes.
+    use_device_events = _device_event_timer is not None
+    if use_device_events:
+        start_event, end_event = _device_event_timer()
+        start_event.record()
+
     time_total = 0
     # Dont collect outputs to correctly measure timing
     for i in range(times):
@@ -741,6 +758,13 @@ def timed(
             xm.mark_step()
         t_iter_end = time.perf_counter()
         time_total += t_iter_end - t_iter_begin
+
+    if use_device_events:
+        end_event.record()
+        synchronize()
+        # elapsed_time is in ms; callers work in seconds.
+        time_total = start_event.elapsed_time(end_event) / 1000
+        return (time_total, result) if return_result else time_total
 
     t_0 = time.perf_counter()
     if use_xla:
@@ -3348,6 +3372,14 @@ def parse_args(args=None):
         "--iterations-per-run", type=int, default=1, help=iterations_per_run_help
     )
     parser.add_argument(
+        "--device-event-timing",
+        action="store_true",
+        help="""Time each run with device events instead of the host clock, so an
+        unrelated busy CPU cannot move the result. This measures GPU time only:
+        on a host-bound model the reported latency is smaller than the
+        wall-clock one, so numbers are not comparable across the two modes.""",
+    )
+    parser.add_argument(
         "--randomize-input",
         action="store_true",
         help="Whether to randomize the input values. Dimensions will be kept the same.",
@@ -4432,6 +4464,20 @@ def run(runner, args, original_dir=None):
         # eager path while the compiled path effectively syncs, manufacturing a
         # bogus ~500x slowdown. mps.synchronize makes both paths measure GPU work.
         synchronize = torch.mps.synchronize
+
+    if args.device_event_timing:
+        global _device_event_timer
+        if args.devices != ["cpu"] and (HAS_CUDA or HAS_XPU):
+            ev = torch.cuda.Event if HAS_CUDA else torch.xpu.Event
+        elif "mps" in args.devices:
+            ev = torch.mps.Event
+        else:
+            print("--device-event-timing needs an accelerator device")
+            return sys.exit(-1)
+        _device_event_timer = lambda: (  # noqa: E731
+            ev(enable_timing=True),
+            ev(enable_timing=True),
+        )
 
     if args.nnc:
         torch._C._jit_override_can_fuse_on_cpu(True)
