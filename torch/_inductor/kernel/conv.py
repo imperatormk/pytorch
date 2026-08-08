@@ -1376,6 +1376,24 @@ def conv2d_bwd_input_grid(n, cin, h, w, meta, *, cdiv):
     )
 
 
+@SymbolicGridFn
+def conv3d_bwd_input_grid(n, cin, d, h, w, meta, *, cdiv):
+    g = meta["GROUPS"]
+    return (
+        cdiv(n * d * h * w, meta["BLOCK_M"]),
+        cdiv(cin // g, meta["BLOCK_N"]),
+        g,
+    )
+
+
+conv3d_bwd_input_template = TritonTemplate(
+    name="convolution3d_bwd_input",
+    grid=conv3d_bwd_input_grid,
+    source=load_kernel_template("triton_conv3d_bwd_input"),
+    cache_codegen_enabled_for_template=True,
+)
+
+
 conv2d_bwd_input_template = TritonTemplate(
     name="convolution2d_bwd_input",
     grid=conv2d_bwd_input_grid,
@@ -1641,8 +1659,30 @@ def convolution_backward_lowering(
                         num_warps=cfg.num_warps,
                         **cfg.kwargs,
                     )
-
-                # TODO: backward input 3D
+                elif ndim == 3:
+                    has_triton_dx_choices = True
+                    conv3d_bwd_input_template.maybe_append_choice(
+                        choices_dx,
+                        input_nodes=(grad_out, weight),
+                        layout=layout_dx,
+                        KERNEL_D=kernel_shape[0],
+                        KERNEL_H=kernel_shape[1],
+                        KERNEL_W=kernel_shape[2],
+                        PADDING_D=padding[0],
+                        PADDING_H=padding[1],
+                        PADDING_W=padding[2],
+                        STRIDE_D=stride[0],
+                        STRIDE_H=stride[1],
+                        STRIDE_W=stride[2],
+                        DILATION_D=dilation[0],
+                        DILATION_H=dilation[1],
+                        DILATION_W=dilation[2],
+                        GROUPS=groups,
+                        ALLOW_TF32=torch.backends.cudnn.allow_tf32,
+                        num_stages=cfg.num_stages,
+                        num_warps=cfg.num_warps,
+                        **cfg.kwargs,
+                    )
 
     # Fallback when no TRITON choices available, i.e., ndim != 2, backend config = ATEN,...
     if not has_triton_dx_choices and not has_triton_dw_choices:
