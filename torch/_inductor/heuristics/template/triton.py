@@ -2243,6 +2243,11 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(64, 128, 16, 2, 8),
             GemmConfig(64, 128, 32, 2, 8),
             GemmConfig(128, 64, 32, 2, 8),
+            # Full-tile config for bandwidth-bound square-ish batched GEMMs:
+            # attention QK/dP (B~1536, M=N=128, K=64) runs 1.22x faster at
+            # 128x128 than any smaller tile and reaches aten/bandwidth parity.
+            # Staging (128*32 + 32*128)*4 = 32KB fits the budget exactly.
+            GemmConfig(128, 128, 32, 2, 8),
         ]
         # The inherited conv_configs are tuned for NVIDIA smem (up to 128x256 and
         # 128x128x128, ~64KB of f32 staging) and all OOM on Apple's 32KB
