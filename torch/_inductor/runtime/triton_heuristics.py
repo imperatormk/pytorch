@@ -694,6 +694,13 @@ class CachingAutotuner(KernelInterface):
                 delete()
 
     def release_benchmark_artifacts(self) -> None:
+        # _precompile_worker drops self.configs once it has compiled them, so
+        # releasing the compile results without restoring the configs would
+        # leave nothing to recompile from and the next precompile would raise
+        # NoTritonConfigsError. Recover them from the results being dropped.
+        if self.configs is None and self.compile_results:
+            self.configs = [result.config for result in self.compile_results]
+
         for launcher in self.launchers:
             kernel = getattr(launcher, "__self__", None)
             self._close_compiled_kernel(kernel)

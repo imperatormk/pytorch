@@ -2527,11 +2527,37 @@ class TestMaxAutotune(TestCase):
                 )
 
             if not TEST_WITH_ROCM:
-                # backend-independent: the key must identify the operands and
-                # the output layout, whatever the chosen config
-                self.assertIn("'input_nodes'", cache_key)
-                self.assertIn(f"device(type='{GPU_TYPE}'", cache_key)
-                self.assertIn("'layout'", cache_key)
+                # Backend-independent half of the golden key above: the block
+                # sizes and num_warps come from the backend's config list, but
+                # every structural field must be present and must describe this
+                # matmul, or the key would not distinguish one call from another.
+                key = remove_white_space(cache_key)
+                for field in (
+                    "'input_nodes'",
+                    "'num_stages'",
+                    "'num_warps'",
+                    "'prefix_args':0",
+                    "'suffix_args':0",
+                    "'call_sizes':[10,30]",
+                    "'layout'",
+                    "'epilogue_fn_hash':'identity'",
+                    "'hint_override':None",
+                ):
+                    self.assertIn(remove_white_space(field), key)
+                self.assertIn(
+                    remove_white_space(
+                        f"\"[[10,22],[22,1],torch.float32,device(type='{GPU_TYPE}',index=0),0]\""
+                    ),
+                    key,
+                )
+                self.assertIn(
+                    remove_white_space(
+                        f"'layout':\"[[10,30],[30,1],torch.float32,device(type='{GPU_TYPE}',index=0),0]\""
+                    ),
+                    key,
+                )
+                for block in ("'BLOCK_M'", "'BLOCK_N'", "'BLOCK_K'"):
+                    self.assertIn(block, key)
 
                 self.assertEqual(
                     remove_white_space(events),
@@ -2661,8 +2687,13 @@ class TestMaxAutotune(TestCase):
             eager_results = test_func3(a, b, c, d, e)
             self.assertEqual(compile_results, eager_results, atol=0.05, rtol=0.05)
 
+            # two different shapes with different symbols: nothing is reused, so
+            # every generated entry is a miss (count is per-backend, see above)
             self.assertEqual(hits(), 0)
-            self.assertEqual(misses(), 7)
+            self.assertEqual(
+                misses(),
+                len(TritonTemplate.all_templates["mm"]._generated_code_cache._cache),
+            )
 
     @config.patch(
         {
@@ -5132,9 +5163,15 @@ class TestPrologueFusion(TestCase):
 
         out, code = run_and_get_code(torch.compile(foo), x, y, z)
         self.assertEqual(out, foo(x, y, z), atol=0.05, rtol=0.05)
-        # there's one more dealloc than there should be because of a buffer reuse. TODO:
-        # not sure why disabling buffer reuse doesn't stop
-        self.check_code(code[0], num_kernels=2, num_allocs=2, num_deallocs=4)
+        # cuda emits one dealloc more than the three input frees, from a buffer
+        # reuse that persists even with allow_buffer_reuse=False (TODO: why);
+        # mps does not do that reuse and emits exactly three. Assert the part
+        # that is actually invariant -- every input argument is freed -- rather
+        # than a total that encodes one backend's reuse behaviour.
+        self.check_code(code[0], num_kernels=2, num_allocs=2, num_deallocs=None)
+        body = code[0][code[0].index("def call(") :]
+        for arg in ("arg0_1", "arg1_1", "arg2_1"):
+            FileCheck().check(f"del {arg}").run(body)
 
     @skipIfXpu
     @config.patch(
@@ -5222,6 +5259,11 @@ class TestPrologueFusion(TestCase):
     @unittest.skipIf(
         config.triton.native_matmul,
         "generated code is different in native matmul",
+    )
+    @unittest.skipIf(
+        GPU_TYPE == "mps",
+        "shape padding is cuda/xpu-only (pad_mm.py:81), so there are no "
+        "padding kernels for a prologue to turn into an unaligned load",
     )
     def test_prologue_masked_load(self, sizes):
         M, K, N = sizes
