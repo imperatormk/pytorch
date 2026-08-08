@@ -9,6 +9,7 @@ that does read them keeps working.
 """
 
 import sympy
+
 import torch
 
 from ..ir import FixedLayout, FlexibleLayout
@@ -37,27 +38,36 @@ flash_template = TritonTemplate(
 )
 
 
+# Apple's hard threadgroup-memory cap. A dot whose two operand tiles do not
+# both fit is denied in-place aliasing and falls back to a per-fragment device
+# path, which measures 5-16% of the MMA ceiling against 36-43% for a tile that
+# fits: a 7.7x cliff, not a gradient. Both of attention's dots have to fit,
+# and the QK dot is the binding one at large head_dim.
+_TG_BUDGET_BYTES = 32768
+
+
+def _fits_threadgroup_budget(block_m, block_n, head_dim, itemsize=4):
+    qk = (block_m * head_dim + head_dim * block_n) * itemsize
+    pv = (block_m * block_n + block_n * head_dim) * itemsize
+    return max(qk, pv) <= _TG_BUDGET_BYTES
+
+
 def _configs(q_len, head_dim):
     out = []
-    for block_m in (32, 64):
-        for block_n in (32, 64):
+    for block_m in (16, 32, 64):
+        for block_n in (16, 32, 64):
             for num_warps in (4, 8):
                 if block_m > q_len or block_n > q_len:
                     continue
-                out.append((block_m, block_n, num_warps))
-    # A wide head spends its time in the QK dot, whose cost per MMA grows with
-    # head_dim; a narrow key block is what keeps that tile affordable.
-    if head_dim >= 128:
-        for block_m in (16, 32):
-            for num_warps in (4, 8):
-                if block_m > q_len or 16 > q_len:
+                if not _fits_threadgroup_budget(block_m, block_n, head_dim):
                     continue
-                out.append((block_m, 16, num_warps))
-    return out or [(32, 32, 4)]
+                out.append((block_m, block_n, num_warps))
+    return out or [(16, 16, 4)]
 
 
-def _mps_flash_supported(query, key, value, attn_mask, dropout_p, is_causal,
-                         dropout_mask, scale, enable_gqa):
+def _mps_flash_supported(
+    query, key, value, attn_mask, dropout_p, is_causal, dropout_mask, scale, enable_gqa
+):
     if dropout_p != 0.0 or dropout_mask is not None:
         return False
     if attn_mask is not None:
@@ -86,7 +96,6 @@ def _mps_flash_supported(query, key, value, attn_mask, dropout_p, is_causal,
     head_dim = q_sz[3]
     if head_dim != v_sz[3] or head_dim != k_sz[3]:
         return False
-    from ..virtualized import V
 
     dims = []
     for d in (*q_sz, *k_sz, *v_sz):
@@ -105,9 +114,9 @@ def _mps_flash_supported(query, key, value, attn_mask, dropout_p, is_causal,
 def _fallback(*args, **kwargs):
     from ..lowering import fallback_handler
 
-    return fallback_handler(
-        aten._scaled_dot_product_attention_math_for_mps.default
-    )(*args, **kwargs)
+    return fallback_handler(aten._scaled_dot_product_attention_math_for_mps.default)(
+        *args, **kwargs
+    )
 
 
 @register_lowering(aten._scaled_dot_product_attention_math_for_mps)
@@ -123,12 +132,26 @@ def scaled_dot_product_attention_math_for_mps(
     enable_gqa=False,
 ):
     if not _mps_flash_supported(
-        query, key, value, attn_mask, dropout_p, is_causal, dropout_mask,
-        scale, enable_gqa,
+        query,
+        key,
+        value,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        dropout_mask,
+        scale,
+        enable_gqa,
     ):
         return _fallback(
-            query, key, value, attn_mask, dropout_p, is_causal, dropout_mask,
-            scale=scale, enable_gqa=enable_gqa,
+            query,
+            key,
+            value,
+            attn_mask,
+            dropout_p,
+            is_causal,
+            dropout_mask,
+            scale=scale,
+            enable_gqa=enable_gqa,
         )
 
     from ..lowering import expand, get_constant_value
@@ -145,14 +168,12 @@ def scaled_dot_product_attention_math_for_mps(
     kv = key.get_size()[2]
     if has_mask:
         attn_mask = expand(attn_mask, [B, H, q_len, kv])
-        query, key, value, attn_mask = realize_inputs(
-            query, key, value, attn_mask
-        )
+        query, key, value, attn_mask = realize_inputs(query, key, value, attn_mask)
     else:
         query, key, value = realize_inputs(query, key, value)
         attn_mask = query
     kv_len = key.get_size()[2]
-    sm_scale = (1.0 / (head_dim ** 0.5)) if scale is None else scale
+    sm_scale = (1.0 / (head_dim**0.5)) if scale is None else scale
 
     layout = FixedLayout(
         query.get_device(),
@@ -178,8 +199,15 @@ def scaled_dot_product_attention_math_for_mps(
         )
     if not choices:
         return _fallback(
-            query, key, value, attn_mask, dropout_p, is_causal, dropout_mask,
-            scale=scale, enable_gqa=enable_gqa,
+            query,
+            key,
+            value,
+            attn_mask,
+            dropout_p,
+            is_causal,
+            dropout_mask,
+            scale=scale,
+            enable_gqa=enable_gqa,
         )
 
     out, _ = autotune_select_algorithm(

@@ -28,7 +28,15 @@
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
     acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
 
-    for start_n in range(0, KV_LEN, BLOCK_N):
+    # Under causal masking every key block strictly above this query block's
+    # diagonal contributes nothing, so stopping at the diagonal removes about
+    # half the dots rather than computing them and masking the result away.
+    if IS_CAUSAL:
+        n_end = tl.minimum((start_m + 1) * BLOCK_M, KV_LEN)
+    else:
+        n_end = KV_LEN
+
+    for start_n in range(0, n_end, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
         k = tl.load(kb + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk,
                     mask=offs_n[:, None] < KV_LEN, other=0.0)
