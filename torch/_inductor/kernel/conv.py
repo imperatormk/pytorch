@@ -1112,7 +1112,7 @@ def convolution(
             device_type == "mps"
             and ndim == 2
             and groups == 1
-            and x.get_dtype() == torch.float32
+            and x.get_dtype() in (torch.float32, torch.float16, torch.bfloat16)
             and V.graph.sizevars.statically_known_equals(kernel_shape[0], 3)
             and V.graph.sizevars.statically_known_equals(kernel_shape[1], 3)
             and is_ones(stride)
@@ -1629,7 +1629,7 @@ def convolution_backward_lowering(
                 device_type == "mps"
                 and ndim == 2
                 and groups == 1
-                and grad_out.get_dtype() == torch.float32
+                and grad_out.get_dtype() in (torch.float32, torch.float16, torch.bfloat16)
                 and kernel_shape == [3, 3]
                 and is_ones(stride)
                 and is_ones(dilation)
@@ -1765,7 +1765,7 @@ def convolution_backward_lowering(
                 device_type == "mps"
                 and ndim == 2
                 and groups == 1
-                and grad_out.get_dtype() == torch.float32
+                and grad_out.get_dtype() in (torch.float32, torch.float16, torch.bfloat16)
                 and kernel_shape == [3, 3]
                 and is_ones(stride)
                 and is_ones(dilation)
