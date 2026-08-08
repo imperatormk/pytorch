@@ -565,6 +565,15 @@ def winograd_conv2d_mps(x_t, w_t, *, padding, out):
 ext_kn_winograd = ExternKernelChoice(winograd_conv2d_mps, None)
 
 
+def winograd_conv2d_mps_dx(go_t, w_t, *, padding, out):
+    from ._winograd_conv_mps import winograd_conv2d_bwd_input
+
+    return winograd_conv2d_bwd_input(go_t, w_t, padding=padding, out=out)
+
+
+ext_kn_winograd_dx = ExternKernelChoice(winograd_conv2d_mps_dx, None)
+
+
 def _conv1x1_rows_are_dense(x) -> bool:
     """Do the (n, h, w) axes tile the row index contiguously?
 
@@ -1718,6 +1727,26 @@ def convolution_backward_lowering(
                         num_warps=cfg.num_warps,
                         **cfg.kwargs,
                     )
+
+            if (
+                device_type == "mps"
+                and ndim == 2
+                and groups == 1
+                and grad_out.get_dtype() == torch.float32
+                and kernel_shape == [3, 3]
+                and is_ones(stride)
+                and is_ones(dilation)
+                and min(in_chan, out_chan) >= 128
+            ):
+                has_triton_dx_choices = True
+                choices_dx.append(
+                    ext_kn_winograd_dx.bind(
+                        input_nodes=(grad_out, weight),
+                        layout=layout_dx,
+                        ordered_kwargs_for_cpp_kernel=["padding"],
+                        padding=padding,
+                    )
+                )
 
     # Fallback when no TRITON choices available, i.e., ndim != 2, backend config = ATEN,...
     if not has_triton_dx_choices and not has_triton_dw_choices:

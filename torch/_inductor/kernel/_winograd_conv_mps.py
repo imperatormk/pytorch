@@ -473,3 +473,38 @@ def winograd_conv2d_fwd(x, w, *, padding, out):
         sy[0], sy[1], sy[2], sy[3], BLOCK_K=32,
     )
     return out
+
+
+def winograd_conv2d_bwd_input(go, w, *, padding, out):
+    # dx of a stride-1 3x3 conv is the forward winograd conv of grad_output
+    # with the weight rotated 180 degrees and its channel dims swapped, at
+    # transformed padding 2 - p. The rotation and swap are absorbed into the
+    # weight-transform launch: a view shifted to the (2, 2) tap with negated
+    # tap strides and the K/C stride roles exchanged.
+    N, K, OH, OW = go.shape
+    C = w.shape[1]
+    ph, pw = 2 - padding[0], 2 - padding[1]
+    H, W = out.shape[2], out.shape[3]
+    TH, TW = (H + 3) // 4, (W + 3) // 4
+    T = N * TH * TW
+
+    v = torch.empty(36, K, C, device=go.device, dtype=go.dtype)
+    u = torch.empty(36, T, K, device=go.device, dtype=go.dtype)
+    m = torch.empty(36, T, C, device=go.device, dtype=go.dtype)
+
+    sw = w.stride()
+    sg = go.stride()
+    sy = out.stride()
+    _wino_v_kernel[(K, (C + 31) // 32)](
+        w[:, :, 2:, 2:], v, K, C, sw[1], sw[0], -sw[2], -sw[3], BLOCK_K=32,
+    )
+    _wino_u_kernel[(T, (K + 31) // 32)](
+        go, u, K, OH, OW, ph, pw, TW, TH * TW, T,
+        sg[0], sg[1], sg[2], sg[3], BLOCK_C=32,
+    )
+    torch.bmm(u, v, out=m)
+    _wino_y_kernel[(T, (C + 31) // 32)](
+        m, out, C, H, W, TW, TH * TW, T,
+        sy[0], sy[1], sy[2], sy[3], BLOCK_K=32,
+    )
+    return out
