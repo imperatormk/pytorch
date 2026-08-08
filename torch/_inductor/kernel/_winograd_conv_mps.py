@@ -508,3 +508,259 @@ def winograd_conv2d_bwd_input(go, w, *, padding, out):
         sy[0], sy[1], sy[2], sy[3], BLOCK_K=32,
     )
     return out
+
+
+@triton.jit
+def _wino_dm_kernel(GO, DM, K, OH, OW, TW, THW, T,
+                    sgn, sgk, sgh, sgw, BLOCK_K: tl.constexpr):
+    t = tl.program_id(0)
+    kb = tl.program_id(1)
+    n = t // THW
+    th = (t % THW) // TW
+    tw = t % TW
+    k = kb * BLOCK_K + tl.arange(0, BLOCK_K)
+    kmask = k < K
+    base = GO + n * sgn + k * sgk
+    m_0_0 = kmask & (th * 4 + 0 < OH) & (tw * 4 + 0 < OW)
+    g_0_0 = tl.load(base + (th * 4 + 0) * sgh + (tw * 4 + 0) * sgw, mask=m_0_0, other=0.0)
+    m_0_1 = kmask & (th * 4 + 0 < OH) & (tw * 4 + 1 < OW)
+    g_0_1 = tl.load(base + (th * 4 + 0) * sgh + (tw * 4 + 1) * sgw, mask=m_0_1, other=0.0)
+    m_0_2 = kmask & (th * 4 + 0 < OH) & (tw * 4 + 2 < OW)
+    g_0_2 = tl.load(base + (th * 4 + 0) * sgh + (tw * 4 + 2) * sgw, mask=m_0_2, other=0.0)
+    m_0_3 = kmask & (th * 4 + 0 < OH) & (tw * 4 + 3 < OW)
+    g_0_3 = tl.load(base + (th * 4 + 0) * sgh + (tw * 4 + 3) * sgw, mask=m_0_3, other=0.0)
+    m_1_0 = kmask & (th * 4 + 1 < OH) & (tw * 4 + 0 < OW)
+    g_1_0 = tl.load(base + (th * 4 + 1) * sgh + (tw * 4 + 0) * sgw, mask=m_1_0, other=0.0)
+    m_1_1 = kmask & (th * 4 + 1 < OH) & (tw * 4 + 1 < OW)
+    g_1_1 = tl.load(base + (th * 4 + 1) * sgh + (tw * 4 + 1) * sgw, mask=m_1_1, other=0.0)
+    m_1_2 = kmask & (th * 4 + 1 < OH) & (tw * 4 + 2 < OW)
+    g_1_2 = tl.load(base + (th * 4 + 1) * sgh + (tw * 4 + 2) * sgw, mask=m_1_2, other=0.0)
+    m_1_3 = kmask & (th * 4 + 1 < OH) & (tw * 4 + 3 < OW)
+    g_1_3 = tl.load(base + (th * 4 + 1) * sgh + (tw * 4 + 3) * sgw, mask=m_1_3, other=0.0)
+    m_2_0 = kmask & (th * 4 + 2 < OH) & (tw * 4 + 0 < OW)
+    g_2_0 = tl.load(base + (th * 4 + 2) * sgh + (tw * 4 + 0) * sgw, mask=m_2_0, other=0.0)
+    m_2_1 = kmask & (th * 4 + 2 < OH) & (tw * 4 + 1 < OW)
+    g_2_1 = tl.load(base + (th * 4 + 2) * sgh + (tw * 4 + 1) * sgw, mask=m_2_1, other=0.0)
+    m_2_2 = kmask & (th * 4 + 2 < OH) & (tw * 4 + 2 < OW)
+    g_2_2 = tl.load(base + (th * 4 + 2) * sgh + (tw * 4 + 2) * sgw, mask=m_2_2, other=0.0)
+    m_2_3 = kmask & (th * 4 + 2 < OH) & (tw * 4 + 3 < OW)
+    g_2_3 = tl.load(base + (th * 4 + 2) * sgh + (tw * 4 + 3) * sgw, mask=m_2_3, other=0.0)
+    m_3_0 = kmask & (th * 4 + 3 < OH) & (tw * 4 + 0 < OW)
+    g_3_0 = tl.load(base + (th * 4 + 3) * sgh + (tw * 4 + 0) * sgw, mask=m_3_0, other=0.0)
+    m_3_1 = kmask & (th * 4 + 3 < OH) & (tw * 4 + 1 < OW)
+    g_3_1 = tl.load(base + (th * 4 + 3) * sgh + (tw * 4 + 1) * sgw, mask=m_3_1, other=0.0)
+    m_3_2 = kmask & (th * 4 + 3 < OH) & (tw * 4 + 2 < OW)
+    g_3_2 = tl.load(base + (th * 4 + 3) * sgh + (tw * 4 + 2) * sgw, mask=m_3_2, other=0.0)
+    m_3_3 = kmask & (th * 4 + 3 < OH) & (tw * 4 + 3 < OW)
+    g_3_3 = tl.load(base + (th * 4 + 3) * sgh + (tw * 4 + 3) * sgw, mask=m_3_3, other=0.0)
+    q_0_0 = g_0_0
+    q_0_1 = g_0_1
+    q_0_2 = g_0_2
+    q_0_3 = g_0_3
+    q_1_0 = g_0_0 + g_1_0 + g_2_0 + g_3_0
+    q_1_1 = g_0_1 + g_1_1 + g_2_1 + g_3_1
+    q_1_2 = g_0_2 + g_1_2 + g_2_2 + g_3_2
+    q_1_3 = g_0_3 + g_1_3 + g_2_3 + g_3_3
+    q_2_0 = g_0_0 + (-g_1_0) + g_2_0 + (-g_3_0)
+    q_2_1 = g_0_1 + (-g_1_1) + g_2_1 + (-g_3_1)
+    q_2_2 = g_0_2 + (-g_1_2) + g_2_2 + (-g_3_2)
+    q_2_3 = g_0_3 + (-g_1_3) + g_2_3 + (-g_3_3)
+    q_3_0 = g_0_0 + (2.0 * g_1_0) + (4.0 * g_2_0) + (8.0 * g_3_0)
+    q_3_1 = g_0_1 + (2.0 * g_1_1) + (4.0 * g_2_1) + (8.0 * g_3_1)
+    q_3_2 = g_0_2 + (2.0 * g_1_2) + (4.0 * g_2_2) + (8.0 * g_3_2)
+    q_3_3 = g_0_3 + (2.0 * g_1_3) + (4.0 * g_2_3) + (8.0 * g_3_3)
+    q_4_0 = g_0_0 + (-2.0 * g_1_0) + (4.0 * g_2_0) + (-8.0 * g_3_0)
+    q_4_1 = g_0_1 + (-2.0 * g_1_1) + (4.0 * g_2_1) + (-8.0 * g_3_1)
+    q_4_2 = g_0_2 + (-2.0 * g_1_2) + (4.0 * g_2_2) + (-8.0 * g_3_2)
+    q_4_3 = g_0_3 + (-2.0 * g_1_3) + (4.0 * g_2_3) + (-8.0 * g_3_3)
+    q_5_0 = g_3_0
+    q_5_1 = g_3_1
+    q_5_2 = g_3_2
+    q_5_3 = g_3_3
+    dm_0_0 = q_0_0
+    tl.store(DM + 0 * T * K + t * K + k, dm_0_0, mask=kmask)
+    dm_0_1 = q_0_0 + q_0_1 + q_0_2 + q_0_3
+    tl.store(DM + 1 * T * K + t * K + k, dm_0_1, mask=kmask)
+    dm_0_2 = q_0_0 + (-q_0_1) + q_0_2 + (-q_0_3)
+    tl.store(DM + 2 * T * K + t * K + k, dm_0_2, mask=kmask)
+    dm_0_3 = q_0_0 + (2.0 * q_0_1) + (4.0 * q_0_2) + (8.0 * q_0_3)
+    tl.store(DM + 3 * T * K + t * K + k, dm_0_3, mask=kmask)
+    dm_0_4 = q_0_0 + (-2.0 * q_0_1) + (4.0 * q_0_2) + (-8.0 * q_0_3)
+    tl.store(DM + 4 * T * K + t * K + k, dm_0_4, mask=kmask)
+    dm_0_5 = q_0_3
+    tl.store(DM + 5 * T * K + t * K + k, dm_0_5, mask=kmask)
+    dm_1_0 = q_1_0
+    tl.store(DM + 6 * T * K + t * K + k, dm_1_0, mask=kmask)
+    dm_1_1 = q_1_0 + q_1_1 + q_1_2 + q_1_3
+    tl.store(DM + 7 * T * K + t * K + k, dm_1_1, mask=kmask)
+    dm_1_2 = q_1_0 + (-q_1_1) + q_1_2 + (-q_1_3)
+    tl.store(DM + 8 * T * K + t * K + k, dm_1_2, mask=kmask)
+    dm_1_3 = q_1_0 + (2.0 * q_1_1) + (4.0 * q_1_2) + (8.0 * q_1_3)
+    tl.store(DM + 9 * T * K + t * K + k, dm_1_3, mask=kmask)
+    dm_1_4 = q_1_0 + (-2.0 * q_1_1) + (4.0 * q_1_2) + (-8.0 * q_1_3)
+    tl.store(DM + 10 * T * K + t * K + k, dm_1_4, mask=kmask)
+    dm_1_5 = q_1_3
+    tl.store(DM + 11 * T * K + t * K + k, dm_1_5, mask=kmask)
+    dm_2_0 = q_2_0
+    tl.store(DM + 12 * T * K + t * K + k, dm_2_0, mask=kmask)
+    dm_2_1 = q_2_0 + q_2_1 + q_2_2 + q_2_3
+    tl.store(DM + 13 * T * K + t * K + k, dm_2_1, mask=kmask)
+    dm_2_2 = q_2_0 + (-q_2_1) + q_2_2 + (-q_2_3)
+    tl.store(DM + 14 * T * K + t * K + k, dm_2_2, mask=kmask)
+    dm_2_3 = q_2_0 + (2.0 * q_2_1) + (4.0 * q_2_2) + (8.0 * q_2_3)
+    tl.store(DM + 15 * T * K + t * K + k, dm_2_3, mask=kmask)
+    dm_2_4 = q_2_0 + (-2.0 * q_2_1) + (4.0 * q_2_2) + (-8.0 * q_2_3)
+    tl.store(DM + 16 * T * K + t * K + k, dm_2_4, mask=kmask)
+    dm_2_5 = q_2_3
+    tl.store(DM + 17 * T * K + t * K + k, dm_2_5, mask=kmask)
+    dm_3_0 = q_3_0
+    tl.store(DM + 18 * T * K + t * K + k, dm_3_0, mask=kmask)
+    dm_3_1 = q_3_0 + q_3_1 + q_3_2 + q_3_3
+    tl.store(DM + 19 * T * K + t * K + k, dm_3_1, mask=kmask)
+    dm_3_2 = q_3_0 + (-q_3_1) + q_3_2 + (-q_3_3)
+    tl.store(DM + 20 * T * K + t * K + k, dm_3_2, mask=kmask)
+    dm_3_3 = q_3_0 + (2.0 * q_3_1) + (4.0 * q_3_2) + (8.0 * q_3_3)
+    tl.store(DM + 21 * T * K + t * K + k, dm_3_3, mask=kmask)
+    dm_3_4 = q_3_0 + (-2.0 * q_3_1) + (4.0 * q_3_2) + (-8.0 * q_3_3)
+    tl.store(DM + 22 * T * K + t * K + k, dm_3_4, mask=kmask)
+    dm_3_5 = q_3_3
+    tl.store(DM + 23 * T * K + t * K + k, dm_3_5, mask=kmask)
+    dm_4_0 = q_4_0
+    tl.store(DM + 24 * T * K + t * K + k, dm_4_0, mask=kmask)
+    dm_4_1 = q_4_0 + q_4_1 + q_4_2 + q_4_3
+    tl.store(DM + 25 * T * K + t * K + k, dm_4_1, mask=kmask)
+    dm_4_2 = q_4_0 + (-q_4_1) + q_4_2 + (-q_4_3)
+    tl.store(DM + 26 * T * K + t * K + k, dm_4_2, mask=kmask)
+    dm_4_3 = q_4_0 + (2.0 * q_4_1) + (4.0 * q_4_2) + (8.0 * q_4_3)
+    tl.store(DM + 27 * T * K + t * K + k, dm_4_3, mask=kmask)
+    dm_4_4 = q_4_0 + (-2.0 * q_4_1) + (4.0 * q_4_2) + (-8.0 * q_4_3)
+    tl.store(DM + 28 * T * K + t * K + k, dm_4_4, mask=kmask)
+    dm_4_5 = q_4_3
+    tl.store(DM + 29 * T * K + t * K + k, dm_4_5, mask=kmask)
+    dm_5_0 = q_5_0
+    tl.store(DM + 30 * T * K + t * K + k, dm_5_0, mask=kmask)
+    dm_5_1 = q_5_0 + q_5_1 + q_5_2 + q_5_3
+    tl.store(DM + 31 * T * K + t * K + k, dm_5_1, mask=kmask)
+    dm_5_2 = q_5_0 + (-q_5_1) + q_5_2 + (-q_5_3)
+    tl.store(DM + 32 * T * K + t * K + k, dm_5_2, mask=kmask)
+    dm_5_3 = q_5_0 + (2.0 * q_5_1) + (4.0 * q_5_2) + (8.0 * q_5_3)
+    tl.store(DM + 33 * T * K + t * K + k, dm_5_3, mask=kmask)
+    dm_5_4 = q_5_0 + (-2.0 * q_5_1) + (4.0 * q_5_2) + (-8.0 * q_5_3)
+    tl.store(DM + 34 * T * K + t * K + k, dm_5_4, mask=kmask)
+    dm_5_5 = q_5_3
+    tl.store(DM + 35 * T * K + t * K + k, dm_5_5, mask=kmask)
+
+
+@triton.jit
+def _wino_dw_kernel(DV, DW, C, K, sdk, sdc, sdh, sdw,
+                    BLOCK_K: tl.constexpr):
+    c = tl.program_id(0)
+    kb = tl.program_id(1)
+    k = kb * BLOCK_K + tl.arange(0, BLOCK_K)
+    kmask = k < K
+    v_0_0 = tl.load(DV + 0 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_0_1 = tl.load(DV + 1 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_0_2 = tl.load(DV + 2 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_0_3 = tl.load(DV + 3 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_0_4 = tl.load(DV + 4 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_0_5 = tl.load(DV + 5 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_1_0 = tl.load(DV + 6 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_1_1 = tl.load(DV + 7 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_1_2 = tl.load(DV + 8 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_1_3 = tl.load(DV + 9 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_1_4 = tl.load(DV + 10 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_1_5 = tl.load(DV + 11 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_2_0 = tl.load(DV + 12 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_2_1 = tl.load(DV + 13 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_2_2 = tl.load(DV + 14 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_2_3 = tl.load(DV + 15 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_2_4 = tl.load(DV + 16 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_2_5 = tl.load(DV + 17 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_3_0 = tl.load(DV + 18 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_3_1 = tl.load(DV + 19 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_3_2 = tl.load(DV + 20 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_3_3 = tl.load(DV + 21 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_3_4 = tl.load(DV + 22 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_3_5 = tl.load(DV + 23 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_4_0 = tl.load(DV + 24 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_4_1 = tl.load(DV + 25 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_4_2 = tl.load(DV + 26 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_4_3 = tl.load(DV + 27 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_4_4 = tl.load(DV + 28 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_4_5 = tl.load(DV + 29 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_5_0 = tl.load(DV + 30 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_5_1 = tl.load(DV + 31 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_5_2 = tl.load(DV + 32 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_5_3 = tl.load(DV + 33 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_5_4 = tl.load(DV + 34 * C * K + c * K + k, mask=kmask, other=0.0)
+    v_5_5 = tl.load(DV + 35 * C * K + c * K + k, mask=kmask, other=0.0)
+    t_0_0 = (0.25 * v_0_0) + (-0.16666666666666666 * v_1_0) + (-0.16666666666666666 * v_2_0) + (0.041666666666666664 * v_3_0) + (0.041666666666666664 * v_4_0)
+    t_0_1 = (0.25 * v_0_1) + (-0.16666666666666666 * v_1_1) + (-0.16666666666666666 * v_2_1) + (0.041666666666666664 * v_3_1) + (0.041666666666666664 * v_4_1)
+    t_0_2 = (0.25 * v_0_2) + (-0.16666666666666666 * v_1_2) + (-0.16666666666666666 * v_2_2) + (0.041666666666666664 * v_3_2) + (0.041666666666666664 * v_4_2)
+    t_0_3 = (0.25 * v_0_3) + (-0.16666666666666666 * v_1_3) + (-0.16666666666666666 * v_2_3) + (0.041666666666666664 * v_3_3) + (0.041666666666666664 * v_4_3)
+    t_0_4 = (0.25 * v_0_4) + (-0.16666666666666666 * v_1_4) + (-0.16666666666666666 * v_2_4) + (0.041666666666666664 * v_3_4) + (0.041666666666666664 * v_4_4)
+    t_0_5 = (0.25 * v_0_5) + (-0.16666666666666666 * v_1_5) + (-0.16666666666666666 * v_2_5) + (0.041666666666666664 * v_3_5) + (0.041666666666666664 * v_4_5)
+    t_1_0 = (-0.16666666666666666 * v_1_0) + (0.16666666666666666 * v_2_0) + (0.08333333333333333 * v_3_0) + (-0.08333333333333333 * v_4_0)
+    t_1_1 = (-0.16666666666666666 * v_1_1) + (0.16666666666666666 * v_2_1) + (0.08333333333333333 * v_3_1) + (-0.08333333333333333 * v_4_1)
+    t_1_2 = (-0.16666666666666666 * v_1_2) + (0.16666666666666666 * v_2_2) + (0.08333333333333333 * v_3_2) + (-0.08333333333333333 * v_4_2)
+    t_1_3 = (-0.16666666666666666 * v_1_3) + (0.16666666666666666 * v_2_3) + (0.08333333333333333 * v_3_3) + (-0.08333333333333333 * v_4_3)
+    t_1_4 = (-0.16666666666666666 * v_1_4) + (0.16666666666666666 * v_2_4) + (0.08333333333333333 * v_3_4) + (-0.08333333333333333 * v_4_4)
+    t_1_5 = (-0.16666666666666666 * v_1_5) + (0.16666666666666666 * v_2_5) + (0.08333333333333333 * v_3_5) + (-0.08333333333333333 * v_4_5)
+    t_2_0 = (-0.16666666666666666 * v_1_0) + (-0.16666666666666666 * v_2_0) + (0.16666666666666666 * v_3_0) + (0.16666666666666666 * v_4_0) + v_5_0
+    t_2_1 = (-0.16666666666666666 * v_1_1) + (-0.16666666666666666 * v_2_1) + (0.16666666666666666 * v_3_1) + (0.16666666666666666 * v_4_1) + v_5_1
+    t_2_2 = (-0.16666666666666666 * v_1_2) + (-0.16666666666666666 * v_2_2) + (0.16666666666666666 * v_3_2) + (0.16666666666666666 * v_4_2) + v_5_2
+    t_2_3 = (-0.16666666666666666 * v_1_3) + (-0.16666666666666666 * v_2_3) + (0.16666666666666666 * v_3_3) + (0.16666666666666666 * v_4_3) + v_5_3
+    t_2_4 = (-0.16666666666666666 * v_1_4) + (-0.16666666666666666 * v_2_4) + (0.16666666666666666 * v_3_4) + (0.16666666666666666 * v_4_4) + v_5_4
+    t_2_5 = (-0.16666666666666666 * v_1_5) + (-0.16666666666666666 * v_2_5) + (0.16666666666666666 * v_3_5) + (0.16666666666666666 * v_4_5) + v_5_5
+    base = DW + k * sdk + c * sdc
+    w_0_0 = (0.25 * t_0_0) + (-0.16666666666666666 * t_0_1) + (-0.16666666666666666 * t_0_2) + (0.041666666666666664 * t_0_3) + (0.041666666666666664 * t_0_4)
+    tl.store(base + 0 * sdh + 0 * sdw, w_0_0, mask=kmask)
+    w_0_1 = (-0.16666666666666666 * t_0_1) + (0.16666666666666666 * t_0_2) + (0.08333333333333333 * t_0_3) + (-0.08333333333333333 * t_0_4)
+    tl.store(base + 0 * sdh + 1 * sdw, w_0_1, mask=kmask)
+    w_0_2 = (-0.16666666666666666 * t_0_1) + (-0.16666666666666666 * t_0_2) + (0.16666666666666666 * t_0_3) + (0.16666666666666666 * t_0_4) + t_0_5
+    tl.store(base + 0 * sdh + 2 * sdw, w_0_2, mask=kmask)
+    w_1_0 = (0.25 * t_1_0) + (-0.16666666666666666 * t_1_1) + (-0.16666666666666666 * t_1_2) + (0.041666666666666664 * t_1_3) + (0.041666666666666664 * t_1_4)
+    tl.store(base + 1 * sdh + 0 * sdw, w_1_0, mask=kmask)
+    w_1_1 = (-0.16666666666666666 * t_1_1) + (0.16666666666666666 * t_1_2) + (0.08333333333333333 * t_1_3) + (-0.08333333333333333 * t_1_4)
+    tl.store(base + 1 * sdh + 1 * sdw, w_1_1, mask=kmask)
+    w_1_2 = (-0.16666666666666666 * t_1_1) + (-0.16666666666666666 * t_1_2) + (0.16666666666666666 * t_1_3) + (0.16666666666666666 * t_1_4) + t_1_5
+    tl.store(base + 1 * sdh + 2 * sdw, w_1_2, mask=kmask)
+    w_2_0 = (0.25 * t_2_0) + (-0.16666666666666666 * t_2_1) + (-0.16666666666666666 * t_2_2) + (0.041666666666666664 * t_2_3) + (0.041666666666666664 * t_2_4)
+    tl.store(base + 2 * sdh + 0 * sdw, w_2_0, mask=kmask)
+    w_2_1 = (-0.16666666666666666 * t_2_1) + (0.16666666666666666 * t_2_2) + (0.08333333333333333 * t_2_3) + (-0.08333333333333333 * t_2_4)
+    tl.store(base + 2 * sdh + 1 * sdw, w_2_1, mask=kmask)
+    w_2_2 = (-0.16666666666666666 * t_2_1) + (-0.16666666666666666 * t_2_2) + (0.16666666666666666 * t_2_3) + (0.16666666666666666 * t_2_4) + t_2_5
+    tl.store(base + 2 * sdh + 2 * sdw, w_2_2, mask=kmask)
+
+
+def winograd_conv2d_bwd_weight(x, go, *, padding, out):
+    # dw[k, c, :, :] = G^T (sum_t U[:, t, c] dM[:, t, k]) G: the per-point
+    # outer accumulation over tiles is one bmm with U consumed through a
+    # transposed view, dM = A dY A^T per tile, and a 6x6 -> 3x3 inverse
+    # transform on the result.
+    N, C, H, W = x.shape
+    K, OH, OW = go.shape[1], go.shape[2], go.shape[3]
+    ph, pw = padding
+    TH, TW = (OH + 3) // 4, (OW + 3) // 4
+    T = N * TH * TW
+
+    u = torch.empty(36, T, C, device=x.device, dtype=x.dtype)
+    dm = torch.empty(36, T, K, device=x.device, dtype=x.dtype)
+    dv = torch.empty(36, C, K, device=x.device, dtype=x.dtype)
+
+    sx = x.stride()
+    sg = go.stride()
+    sd = out.stride()
+    _wino_u_kernel[(T, (C + 31) // 32)](
+        x, u, C, H, W, ph, pw, TW, TH * TW, T,
+        sx[0], sx[1], sx[2], sx[3], BLOCK_C=32,
+    )
+    _wino_dm_kernel[(T, (K + 31) // 32)](
+        go, dm, K, OH, OW, TW, TH * TW, T,
+        sg[0], sg[1], sg[2], sg[3], BLOCK_K=32,
+    )
+    torch.bmm(u.transpose(1, 2), dm, out=dv)
+    _wino_dw_kernel[(C, (K + 31) // 32)](
+        dv, out, C, K, sd[0], sd[1], sd[2], sd[3], BLOCK_K=32,
+    )
+    return out

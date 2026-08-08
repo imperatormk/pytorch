@@ -574,6 +574,15 @@ def winograd_conv2d_mps_dx(go_t, w_t, *, padding, out):
 ext_kn_winograd_dx = ExternKernelChoice(winograd_conv2d_mps_dx, None)
 
 
+def winograd_conv2d_mps_dw(x_t, go_t, *, padding, out):
+    from ._winograd_conv_mps import winograd_conv2d_bwd_weight
+
+    return winograd_conv2d_bwd_weight(x_t, go_t, padding=padding, out=out)
+
+
+ext_kn_winograd_dw = ExternKernelChoice(winograd_conv2d_mps_dw, None)
+
+
 def _conv1x1_rows_are_dense(x) -> bool:
     """Do the (n, h, w) axes tile the row index contiguously?
 
@@ -1321,8 +1330,10 @@ def call_aten_dw(
     else:
         memory_fmt = torch.contiguous_format
 
+    # w_shape can arrive as unresolved SymInts when benchmarked under dynamic
+    # shapes; out is the weight-grad buffer, so its shape is the same ints.
     dummy_weight = torch.empty(
-        w_shape, dtype=out.dtype, device=x_t.device, memory_format=memory_fmt
+        out.shape, dtype=out.dtype, device=x_t.device, memory_format=memory_fmt
     )
 
     # Use the functional .default overload: the .out overload requires real
@@ -1367,8 +1378,10 @@ def call_aten_dx(
     else:
         memory_fmt = torch.contiguous_format
 
+    # x_shape can arrive as unresolved SymInts when benchmarked under dynamic
+    # shapes; out is the input-grad buffer, so its shape is the same ints.
     dummy_input = torch.empty(
-        x_shape, dtype=out.dtype, device=go_t.device, memory_format=memory_fmt
+        out.shape, dtype=out.dtype, device=go_t.device, memory_format=memory_fmt
     )
 
     # Functional .default overload (see call_aten_dw): output_mask selects only
@@ -1611,6 +1624,26 @@ def convolution_backward_lowering(
                     )
 
                 # TODO: backward weight 3D
+
+            if (
+                device_type == "mps"
+                and ndim == 2
+                and groups == 1
+                and grad_out.get_dtype() == torch.float32
+                and kernel_shape == [3, 3]
+                and is_ones(stride)
+                and is_ones(dilation)
+                and min(in_chan, out_chan) >= 128
+            ):
+                has_triton_dw_choices = True
+                choices_dw.append(
+                    ext_kn_winograd_dw.bind(
+                        input_nodes=(input, grad_out),
+                        layout=layout_dw,
+                        ordered_kwargs_for_cpp_kernel=["padding"],
+                        padding=padding,
+                    )
+                )
 
     has_triton_dx_choices = False
     dx = None
