@@ -124,6 +124,31 @@ if HAS_CUDA_AND_TRITON:
 
 _PRIOR_FP32_MATMUL_PRECISION: str | None = None
 
+# MPS benchmarks subgraph choices in-process, so run_and_get_code captures the
+# per-choice benchmark modules ahead of the final artifact; the final artifact
+# is the last module. MPS reduction kernels may also codegen as MultiKernel
+# (named multi_kernel_N) and subgraph-traced nodes carry no origin op names.
+_DK_IS_MPS = GPU_TYPE == "mps"
+
+
+def _dk_artifact(code, want="extern_kernels.bmm_dtype"):
+    if not _DK_IS_MPS:
+        return code[0]
+    for src in reversed(code):
+        if want in src:
+            return src
+    return code[-1]
+
+
+_DK_KERNEL_RE = (
+    r"(triton_.*fused.*|multi_kernel_[0-9]+).run"
+    if _DK_IS_MPS
+    else "triton_.*_fused_.*.run"
+)
+_DK_KERNEL_RE0 = (
+    _DK_KERNEL_RE if _DK_IS_MPS else "triton_.*_fused_.*_0.run"
+)
+
 
 def setUpModule():
     global _PRIOR_FP32_MATMUL_PRECISION
@@ -1850,11 +1875,11 @@ class TestMaxAutotune(TestCase):
             if dynamic:
                 FileCheck().check_not("extern_kernels.bmm_dtype").check_not(
                     "decompose_k"
-                ).run(code[0])
+                ).run(_dk_artifact(code))
             else:
                 FileCheck().check("extern_kernels.bmm_dtype").check_regex(
-                    "triton_.*_fused_.*.run"
-                ).check("decompose_k").run(code[0])
+                    _DK_KERNEL_RE
+                ).check("decompose_k").run(_dk_artifact(code))
                 check_divisors(code)
                 torch.testing.assert_close(out, a @ b, atol=atol, rtol=rtol)
 
@@ -1864,11 +1889,11 @@ class TestMaxAutotune(TestCase):
             if dynamic:
                 FileCheck().check_not("extern_kernels.bmm_dtype").check_not(
                     "decompose_k"
-                ).run(code[0])
+                ).run(_dk_artifact(code))
             else:
                 FileCheck().check("extern_kernels.bmm_dtype").check_regex(
-                    "triton_.*_fused_.*.run"
-                ).check("decompose_k").run(code[0])
+                    _DK_KERNEL_RE
+                ).check("decompose_k").run(_dk_artifact(code))
                 check_divisors(code)
                 torch.testing.assert_close(
                     compiled_func(a, b), (a @ b).relu(), atol=atol, rtol=rtol
@@ -1884,11 +1909,11 @@ class TestMaxAutotune(TestCase):
             if dynamic:
                 FileCheck().check_not("extern_kernels.bmm_dtype").check_not(
                     "decompose_k"
-                ).run(code[0])
+                ).run(_dk_artifact(code))
             else:
                 FileCheck().check("extern_kernels.bmm_dtype").check_regex(
-                    "triton_.*_fused_.*_0.run"
-                ).check("decompose_k").run(code[0])
+                    _DK_KERNEL_RE0
+                ).check("decompose_k").run(_dk_artifact(code))
                 check_divisors(code)
                 torch.testing.assert_close(
                     compiled_func(a, b),
@@ -1945,11 +1970,18 @@ class TestMaxAutotune(TestCase):
                 )
 
                 out, code = run_and_get_code(compiled_func, a, b)
-                FileCheck().check("extern_kernels.bmm_dtype").check_regex(
-                    "triton_.*_fused_.*.run"
+                fc = FileCheck().check("extern_kernels.bmm_dtype").check_regex(
+                    _DK_KERNEL_RE
                 ).check("decompose_k").check_regex(r"s[0-9]+ = s[0-9]+").check_regex(
                     r"2\*s[0-9]+"
-                ).check_regex("s[0-9]+ = 32").run(code[0])
+                )
+                if _DK_IS_MPS:
+                    # the example-value binding lands in the in-process
+                    # benchmark modules, not the final artifact
+                    fc.run(_dk_artifact(code))
+                    self.assertTrue(re.search("s[0-9]+ = 32", "".join(code)))
+                else:
+                    fc.check_regex("s[0-9]+ = 32").run(_dk_artifact(code))
                 torch.testing.assert_close(
                     out,
                     f(a, b),
@@ -2004,12 +2036,12 @@ class TestMaxAutotune(TestCase):
                 out.backward()
 
                 FileCheck().check("extern_kernels.bmm_dtype").check_regex(
-                    "triton_.*_fused_.*.run"
+                    _DK_KERNEL_RE
                 ).check("decompose_k").check_regex(r"s[0-9]+ = s[0-9]+").check_regex(
                     r"256\*s[0-9]+"
                 ).check_regex("s[0-9]+ = 8").run(
                     # code[1] in this case given backwards
-                    code[1]
+                    _dk_artifact(code) if _DK_IS_MPS else code[1]
                 )
 
     @unittest.skipIf(
@@ -2057,11 +2089,14 @@ class TestMaxAutotune(TestCase):
                 # If output stride is not correctly checked, this will be (1152, 1) which can cause nans
                 self.assertEqual(out.stride(), (1096, 1))
 
+                out_alloc = (
+                    "empty_strided((256, 1096), (1096, 1), device='mps', dtype=torch.bfloat16)"
+                    if _DK_IS_MPS
+                    else f" empty_strided_{GPU_TYPE}((256, 1096), (1096, 1), torch.bfloat16)"
+                )
                 FileCheck().check_not("extern_kernels.bmm_dtype").check(
                     "decompose_k"
-                ).check(
-                    f" empty_strided_{GPU_TYPE}((256, 1096), (1096, 1), torch.bfloat16)"
-                ).run(code[0])
+                ).check(out_alloc).run(_dk_artifact(code, want="decompose_k"))
 
     @unittest.skipIf(not torch.version.hip, "ROCM only")
     @parametrize("dtype", (torch.float16, torch.bfloat16, torch.float32))

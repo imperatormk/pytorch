@@ -1383,12 +1383,14 @@
   dispatch:
     CUDA: _bmm_dtype_cuda
     XPU: _bmm_dtype_xpu
+    MPS: _bmm_dtype_mps
 
 - func: bmm.dtype_out(Tensor self, Tensor mat2, ScalarType out_dtype, *, Tensor(a!) out) -> Tensor(a!)
   variants: function
   dispatch:
     CUDA: _bmm_out_dtype_cuda
     XPU: _bmm_out_dtype_xpu
+    MPS: _bmm_out_dtype_mps
 
 - func: broadcast_tensors(Tensor[] tensors) -> Tensor[]
   device_check: NoCheck

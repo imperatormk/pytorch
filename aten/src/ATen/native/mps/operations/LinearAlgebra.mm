@@ -2299,6 +2299,36 @@ TORCH_IMPL_FUNC(bmm_out_mps)(const Tensor& batch1, const Tensor& batch2, const T
   mps::bmm_out_mps_impl(batch1, batch2, const_cast<Tensor&>(result));
 }
 
+Tensor& _bmm_out_dtype_mps(const Tensor& batch1, const Tensor& batch2, const at::ScalarType out_dtype, Tensor& out) {
+  TORCH_CHECK(batch1.dim() == 3, "batch1 must be a 3D tensor");
+  TORCH_CHECK(batch2.dim() == 3, "batch2 must be a 3D tensor");
+  TORCH_CHECK(batch2.size(0) == batch1.size(0) && batch2.size(1) == batch1.size(2),
+              "Expected size for first two dimensions of batch2 tensor to be: [",
+              batch1.size(0),
+              ", ",
+              batch1.size(2),
+              "] but got: [",
+              batch2.size(0),
+              ", ",
+              batch2.size(1),
+              "].");
+  TORCH_CHECK(batch1.scalar_type() == batch2.scalar_type(), "batch1 and batch2 must have the same dtype");
+  TORCH_CHECK(out_dtype == out.scalar_type(), "out_dtype must match the out tensor dtype");
+  TORCH_CHECK(out_dtype == batch1.scalar_type() ||
+                  (out_dtype == at::ScalarType::Float &&
+                   (batch1.scalar_type() == at::ScalarType::Half || batch1.scalar_type() == at::ScalarType::BFloat16)),
+              "out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs");
+  if (out_dtype == batch1.scalar_type()) {
+    return mps::bmm_out_mps_impl(batch1, batch2, out);
+  }
+  return mps::bmm_out_mps_impl(batch1.to(at::kFloat), batch2.to(at::kFloat), out);
+}
+
+Tensor _bmm_dtype_mps(const Tensor& batch1, const Tensor& batch2, const at::ScalarType out_dtype) {
+  Tensor out = at::empty({batch1.size(0), batch1.size(1), batch2.size(2)}, batch1.options().dtype(out_dtype));
+  return _bmm_out_dtype_mps(batch1, batch2, out_dtype, out);
+}
+
 TORCH_IMPL_FUNC(baddbmm_out_mps)
 (const Tensor& self,
  const Tensor& batch1,

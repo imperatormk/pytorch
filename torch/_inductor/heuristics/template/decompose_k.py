@@ -29,6 +29,11 @@ class EmptyDecomposeKConfigHeuristics(TemplateConfigHeuristics):
     "xpu",
     op_name="mm",
 )
+@register_template_heuristic(
+    decompose_k_subgraph_template.uid,
+    "mps",
+    op_name="mm",
+)
 # Register on CUDA (both NVIDIA and ROCm/HIP)
 # Runtime enablement is controlled by config.triton.num_decompose_k_splits (0 disables)
 @register_template_heuristic(
@@ -36,7 +41,7 @@ class EmptyDecomposeKConfigHeuristics(TemplateConfigHeuristics):
     "cuda",
     op_name="mm",
 )
-# TODO(coconutruben): enable decompose k on other devices (xpu, cpu, mps, mtia)
+# TODO(coconutruben): enable decompose k on other devices (cpu, mtia)
 # by either adding specific register_template_heuristic tags, or setting the
 # device to None (enabled on all devices)
 class DecomposeKConfigHeuristics(GemmMaxAutotuneTemplateConfigHeuristics):
