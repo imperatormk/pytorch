@@ -704,8 +704,15 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
         mat2.get_dtype(),
         layout,
     )
+    # use_triton_template carries the backends that opt into the Triton template
+    # without max_autotune (mps selects it via mps_backend), so consult it here
+    # rather than returning aten-only on the max_autotune check alone.
     if (not is_nonzero) or (
-        not (inductor_config.max_autotune or inductor_config.max_autotune_gemm)
+        not (
+            inductor_config.max_autotune
+            or inductor_config.max_autotune_gemm
+            or use_triton_template(layout)
+        )
     ):
         choices.extend(
             V.choices.get_template_configs(

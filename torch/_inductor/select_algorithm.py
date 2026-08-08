@@ -4187,6 +4187,9 @@ class AlgorithmSelectorCache(PersistentCache):
                         hint_override=hint_override,
                         best_config_future=best_config_future,
                     )
+                    # None when pipelined autotuning deferred to AsyncAutotuner
+                    if not timings:
+                        return {}
                     min_extern_choice = float("inf")
                     for choice, timing in timings.items():
                         if isinstance(choice, ExternKernelCaller):
@@ -4242,7 +4245,9 @@ class AlgorithmSelectorCache(PersistentCache):
         # `ExternKernelCaller`s to return, then returning the 0th kernel is our next
         # best option (ideally we'd fail whenever there is no ATen kernel to fallback
         # to, but that's not trivial to figure out)
-        if timings == {}:
+        # do_autotuning returns None when it handed the choices to AsyncAutotuner
+        # (pipelined autotuning), which is likewise "no timings to rank yet".
+        if not timings:
             for choice in choices:
                 if isinstance(choice, ExternKernelCaller):
                     node = choice.output_node()

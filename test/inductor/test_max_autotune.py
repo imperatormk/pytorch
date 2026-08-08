@@ -145,9 +145,7 @@ _DK_KERNEL_RE = (
     if _DK_IS_MPS
     else "triton_.*_fused_.*.run"
 )
-_DK_KERNEL_RE0 = (
-    _DK_KERNEL_RE if _DK_IS_MPS else "triton_.*_fused_.*_0.run"
-)
+_DK_KERNEL_RE0 = _DK_KERNEL_RE if _DK_IS_MPS else "triton_.*_fused_.*_0.run"
 
 
 def setUpModule():
@@ -1295,7 +1293,9 @@ class TestMaxAutotune(TestCase):
         from torch._inductor.kernel.conv import _nhwc_permute_is_dense
 
         size = [4, 8, 9, 9]
-        channels_last = list(torch.empty(size).to(memory_format=torch.channels_last).stride())
+        channels_last = list(
+            torch.empty(size).to(memory_format=torch.channels_last).stride()
+        )
         contiguous = list(torch.empty(size).stride())
         self.assertTrue(_nhwc_permute_is_dense(size, channels_last))
         self.assertFalse(_nhwc_permute_is_dense(size, contiguous))
@@ -1970,10 +1970,13 @@ class TestMaxAutotune(TestCase):
                 )
 
                 out, code = run_and_get_code(compiled_func, a, b)
-                fc = FileCheck().check("extern_kernels.bmm_dtype").check_regex(
-                    _DK_KERNEL_RE
-                ).check("decompose_k").check_regex(r"s[0-9]+ = s[0-9]+").check_regex(
-                    r"2\*s[0-9]+"
+                fc = (
+                    FileCheck()
+                    .check("extern_kernels.bmm_dtype")
+                    .check_regex(_DK_KERNEL_RE)
+                    .check("decompose_k")
+                    .check_regex(r"s[0-9]+ = s[0-9]+")
+                    .check_regex(r"2\*s[0-9]+")
                 )
                 if _DK_IS_MPS:
                     # the example-value binding lands in the in-process
@@ -2956,13 +2959,11 @@ class TestMaxAutotune(TestCase):
                 compiled_fn(*inputs)
 
                 self.assertIn(ExternKernelCaller, choice_types_seen)
-                # On mps, selecting mps_backend="triton" is itself the opt-in
-                # that makes the Triton GEMM template an autotune choice, so it
-                # is offered independently of max_autotune
+                # Selecting mps_backend="triton" is itself the opt-in that makes
+                # the Triton GEMM template an autotune choice, so on mps it is
+                # offered independently of max_autotune
                 # (utils._mps_triton_gemm_enabled).
-                mps_triton = (
-                    GPU_TYPE == "mps" and config.mps_backend == "triton"
-                )
+                mps_triton = GPU_TYPE == "mps" and config.mps_backend == "triton"
                 if max_autotune or mps_triton:
                     self.assertIn(TritonTemplateCaller, choice_types_seen)
                 else:
