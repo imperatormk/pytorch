@@ -82,11 +82,22 @@ _visible_device_env_var_maps = {
 
 
 def get_visible_devices_env_var(gpu_type: str | None = None) -> str:
+    env_var = maybe_get_visible_devices_env_var(gpu_type)
+    if env_var is None:
+        if gpu_type is None:
+            gpu_type = get_gpu_type()
+        raise ValueError(f"Unsupported gpu_type: {gpu_type}")
+    return env_var
+
+
+def maybe_get_visible_devices_env_var(gpu_type: str | None = None) -> str | None:
+    """
+    The device-masking env var for `gpu_type`, or None for backends that expose
+    a single device and therefore have no such var (e.g. mps).
+    """
     if gpu_type is None:
         gpu_type = get_gpu_type()
-    if gpu_type not in _visible_device_env_var_maps:
-        raise ValueError(f"Unsupported gpu_type: {gpu_type}")
-    return _visible_device_env_var_maps[gpu_type]
+    return _visible_device_env_var_maps.get(gpu_type)
 
 
 autotuning_log = getArtifactLogger(__name__, "autotuning")
@@ -141,7 +152,7 @@ class TuningProcess:
         autotuning_log.debug(
             "Started autotune subprocess %s. Visible devices: %s",
             os.getpid(),
-            os.environ.get(get_visible_devices_env_var()),
+            os.environ.get(maybe_get_visible_devices_env_var() or ""),
         )
 
         def workloop():

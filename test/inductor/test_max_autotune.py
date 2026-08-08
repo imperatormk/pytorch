@@ -2487,18 +2487,27 @@ class TestMaxAutotune(TestCase):
         a = torch.rand(10, 22, device=GPU_TYPE)
         b = torch.rand(22, 30, device=GPU_TYPE)
 
-        # Valid cache hit.
+        # Valid cache hit. The two matmuls share a shape, so the second reuses
+        # every entry the first generated: hits == misses == the number of mm
+        # choices offered. That is test_configs.max_mm_configs on backends with
+        # at least that many configs, and fewer where the backend's config list
+        # prunes at this shape (mps offers 3), so derive it rather than hardcode.
         with fresh_cache():
             reset_counters()
             compile_results = torch.compile(func_test1, dynamic=False)(a, b, a, b)
             eager_results = func_test1(a, b, a, b)
             self.assertEqual(compile_results, eager_results, atol=0.05, rtol=0.05)
-            self.assertEqual(hits(), 4)
-            self.assertEqual(misses(), 4)
+            n_cfg = len(TritonTemplate.all_templates["mm"]._generated_code_cache._cache)
+            self.assertEqual(hits(), n_cfg)
+            self.assertEqual(misses(), n_cfg)
 
             cache_key, events = get_cache_key_and_events()
 
-            if not TEST_WITH_ROCM:
+            # The golden key spells out one backend's mm config (num_warps,
+            # BLOCK_*), so it only matches backends sharing that config list;
+            # mps has its own (and an extra MPS_CLAMP_K kwarg). The structural
+            # assertions below the golden text apply everywhere.
+            if not TEST_WITH_ROCM and GPU_TYPE != "mps":
                 expected = """{
                         'input_nodes':[
                             "[[10,22],[22,1],torch.float32,device(type='cuda',index=0),0]",
@@ -2516,6 +2525,13 @@ class TestMaxAutotune(TestCase):
                     remove_white_space(cache_key),
                     remove_white_space(expected),
                 )
+
+            if not TEST_WITH_ROCM:
+                # backend-independent: the key must identify the operands and
+                # the output layout, whatever the chosen config
+                self.assertIn("'input_nodes'", cache_key)
+                self.assertIn(f"device(type='{GPU_TYPE}'", cache_key)
+                self.assertIn("'layout'", cache_key)
 
                 self.assertEqual(
                     remove_white_space(events),
@@ -2535,12 +2551,16 @@ class TestMaxAutotune(TestCase):
 
             self.assertEqual(compiled_results, eager_results, atol=0.05, rtol=0.05)
 
+            # two distinct shapes, so no reuse: one miss per choice per shape
             self.assertEqual(hits(), 0)
-            self.assertEqual(misses(), 8)
+            self.assertEqual(
+                misses(),
+                len(TritonTemplate.all_templates["mm"]._generated_code_cache._cache),
+            )
 
             cache_key, events = get_cache_key_and_events()
 
-            if not TEST_WITH_ROCM:
+            if not TEST_WITH_ROCM and GPU_TYPE != "mps":
                 expected = """{
                     'input_nodes':[
                         "[[s77,s27],[s27,1],torch.float32,device(type='cuda',index=0),0]",
@@ -2557,6 +2577,7 @@ class TestMaxAutotune(TestCase):
                     remove_white_space(expected),
                 )
 
+            if not TEST_WITH_ROCM:
                 self.assertExpectedInline(
                     remove_white_space(events),
                     remove_white_space(
@@ -2583,8 +2604,11 @@ class TestMaxAutotune(TestCase):
             eager_results = func_test1(a, b, a, b)
             self.assertEqual(compile_results, eager_results, atol=0.05, rtol=0.05)
 
-            self.assertEqual(hits(), 4)
-            self.assertEqual(misses(), 4)
+            n_duck = len(
+                TritonTemplate.all_templates["mm"]._generated_code_cache._cache
+            )
+            self.assertEqual(hits(), n_duck)
+            self.assertEqual(misses(), n_duck)
 
         # Test loop.
         def test_func2(x):
@@ -2592,6 +2616,8 @@ class TestMaxAutotune(TestCase):
                 x = torch.matmul(x, x)
             return x
 
+        # 10 chained matmuls of one shape: the first populates the cache and the
+        # other 9 hit it, so hits == 9 * misses whatever the choice count is.
         with fresh_cache():
             reset_counters()
             input = torch.rand(10, 10, device=GPU_TYPE)
@@ -2600,8 +2626,9 @@ class TestMaxAutotune(TestCase):
             eager_results = test_func2(input)
             self.assertEqual(compile_results, eager_results, atol=0.05, rtol=0.05)
 
-            self.assertEqual(hits(), 36)
-            self.assertEqual(misses(), 4)
+            n_sq = len(TritonTemplate.all_templates["mm"]._generated_code_cache._cache)
+            self.assertEqual(hits(), 9 * n_sq)
+            self.assertEqual(misses(), n_sq)
 
         with fresh_cache():
             reset_counters()
@@ -2611,8 +2638,9 @@ class TestMaxAutotune(TestCase):
             eager_results = test_func2(input)
             self.assertEqual(compile_results, eager_results, atol=0.05, rtol=0.05)
 
-            self.assertEqual(hits(), 36)
-            self.assertEqual(misses(), 4)
+            n_sq = len(TritonTemplate.all_templates["mm"]._generated_code_cache._cache)
+            self.assertEqual(hits(), 9 * n_sq)
+            self.assertEqual(misses(), n_sq)
 
         # No cache hit due to symbolic expressions passed i.e mm(s0 + s1, 2) vs mm(s3, 2).
         reset_counters()
@@ -2663,14 +2691,19 @@ class TestMaxAutotune(TestCase):
                 "generated_module_cache_miss"
             ]
 
-        # Valid cache hit.
+        # Valid cache hit. The two bmms share a shape, so hits == misses == the
+        # number of bmm choices offered, which is max_mm_configs where the
+        # backend has that many and fewer where its config list prunes.
         with fresh_cache():
             torch._dynamo.utils.counters.clear()
             compile_results = torch.compile(func_test1, dynamic=False)(a, b, a, b)
             eager_results = func_test1(a, b, a, b)
             self.assertEqual(compile_results, eager_results, atol=0.05, rtol=0.05)
-            self.assertEqual(hits(), 4)
-            self.assertEqual(misses(), 4)
+            n_cfg = len(
+                TritonTemplate.all_templates["bmm"]._generated_code_cache._cache
+            )
+            self.assertEqual(hits(), n_cfg)
+            self.assertEqual(misses(), n_cfg)
 
     @config.patch(
         {
@@ -2891,11 +2924,17 @@ class TestMaxAutotune(TestCase):
                 compiled_fn = torch.compile(fn, dynamic=False)
                 compiled_fn(*inputs)
 
-                if max_autotune:
-                    self.assertIn(ExternKernelCaller, choice_types_seen)
+                self.assertIn(ExternKernelCaller, choice_types_seen)
+                # On mps, selecting mps_backend="triton" is itself the opt-in
+                # that makes the Triton GEMM template an autotune choice, so it
+                # is offered independently of max_autotune
+                # (utils._mps_triton_gemm_enabled).
+                mps_triton = (
+                    GPU_TYPE == "mps" and config.mps_backend == "triton"
+                )
+                if max_autotune or mps_triton:
                     self.assertIn(TritonTemplateCaller, choice_types_seen)
                 else:
-                    self.assertIn(ExternKernelCaller, choice_types_seen)
                     self.assertNotIn(TritonTemplateCaller, choice_types_seen)
         finally:
             clear_preprocessing_fns()
@@ -3973,6 +4012,11 @@ class TestMaxAutotuneSubproc(TestCase):
         )
 
     @skipIfXpu(msg="XPU not support multiprocessing tensor reduction")
+    @unittest.skipIf(
+        GPU_TYPE == "mps",
+        "mps does not support multiprocessing tensor reduction "
+        "(_share_filename_ is CPU-only)",
+    )
     def test_benchmark_choice_in_subproc(self):
         gm = make_fx(
             lambda: torch.zeros(2, 3)
@@ -4012,6 +4056,11 @@ class TestMaxAutotuneSubproc(TestCase):
             print(f"timings is {timings}, out {out}, expected_out {expected_out}")
 
     @skipIfXpu(msg="XPU not support multiprocessing tensor reduction")
+    @unittest.skipIf(
+        GPU_TYPE == "mps",
+        "mps does not support multiprocessing tensor reduction "
+        "(_share_filename_ is CPU-only)",
+    )
     def test_benchmark_choice_fail_in_subproc(self):
         gm = make_fx(
             lambda: torch.zeros(2, 3)
@@ -4500,6 +4549,10 @@ class TestTuningProcessPool(TestCase):
 
         tuning_pool.shutdown()
 
+    @unittest.skipIf(
+        GPU_TYPE == "mps",
+        "mps exposes a single device and has no visible-devices env var to mask",
+    )
     @config.patch({"autotune_multi_device": True})
     def test_tuning_pool_multiple_devices(self):
         # Adapt the test to the available devices (and whether the backend-specific
@@ -4532,6 +4585,10 @@ class TestTuningProcessPool(TestCase):
         self.assertEqual(get_visible_devices_env_var("cuda"), "CUDA_VISIBLE_DEVICES")
         self.assertEqual(get_visible_devices_env_var("xpu"), "ZE_AFFINITY_MASK")
 
+    @unittest.skipIf(
+        GPU_TYPE == "mps",
+        "mps exposes a single device and has no visible-devices env var to mask",
+    )
     @config.patch({"autotune_multi_device": True})
     def test_get_device_list_with_affinity_mask(self):
         env_var = get_visible_devices_env_var(GPU_TYPE)
