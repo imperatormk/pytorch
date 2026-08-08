@@ -556,6 +556,15 @@ aten_convolution = ExternKernelChoice(
 )
 
 
+def winograd_conv2d_mps(x_t, w_t, *, padding, out):
+    from ._winograd_conv_mps import winograd_conv2d_fwd
+
+    return winograd_conv2d_fwd(x_t, w_t, padding=padding, out=out)
+
+
+ext_kn_winograd = ExternKernelChoice(winograd_conv2d_mps, None)
+
+
 def _conv1x1_rows_are_dense(x) -> bool:
     """Do the (n, h, w) axes tile the row index contiguously?
 
@@ -1075,6 +1084,32 @@ def convolution(
                     num_warps=num_warps,
                     **cfg.kwargs,
                 )
+
+        # Split winograd F(4x4,3x3). Gate placed by measurement (b128 sweep,
+        # C=K in {64..384} x HW in {14,28,56}): min(C_in, C_out) >= 128 is
+        # where it stops losing (0.89-1.11x at 128, 1.05-2.00x at >=192,
+        # <=0.86x at <=96, asymmetric shapes follow min); the autotuner
+        # arbitrates inside the region.
+        if (
+            device_type == "mps"
+            and ndim == 2
+            and groups == 1
+            and x.get_dtype() == torch.float32
+            and V.graph.sizevars.statically_known_equals(kernel_shape[0], 3)
+            and V.graph.sizevars.statically_known_equals(kernel_shape[1], 3)
+            and is_ones(stride)
+            and is_ones(dilation)
+            and V.graph.sizevars.statically_known_geq(in_chan, 128)
+            and V.graph.sizevars.statically_known_geq(out_chan, 128)
+        ):
+            choices.append(
+                ext_kn_winograd.bind(
+                    input_nodes=(x, weight),
+                    layout=layout,
+                    ordered_kwargs_for_cpp_kernel=["padding"],
+                    padding=padding,
+                )
+            )
     # The Triton conv2d backward-input kernels miscompile on CUDA (wrong results
     # on sm90, ptxas illegal memory access on sm100) with no perf win, so keep
     # them on ROCm and fall back to ATEN on CUDA. Same rationale as the
