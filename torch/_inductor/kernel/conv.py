@@ -1103,11 +1103,16 @@ def convolution(
                     **cfg.kwargs,
                 )
 
-        # Split winograd F(4x4,3x3). Gate placed by measurement (b128 sweep,
-        # C=K in {64..384} x HW in {14,28,56}): min(C_in, C_out) >= 128 is
-        # where it stops losing (0.89-1.11x at 128, 1.05-2.00x at >=192,
-        # <=0.86x at <=96, asymmetric shapes follow min); the autotuner
-        # arbitrates inside the region.
+        # Split winograd F(4x4,3x3). Gate placed by measurement (b128 sweeps,
+        # C=K in {64..384} x HW in {14..112} plus asymmetric probes): the
+        # symmetric crossover is C ~= 104-112 for HW >= 28 (112 wins
+        # 1.05-1.21x, 96 loses 0.82x), and asymmetric shapes can win with
+        # min(C, K) = 96 when the other side is large ((96,384) wins
+        # 1.14-1.25x), so min alone does not bound the winning region.
+        # min >= 96 covers the measured winning hull; the losing corners
+        # inside it (symmetric 96, any C at HW=14 below ~128) lose by >= 13%,
+        # far outside autotune bias, and selection is argmin-correct, so the
+        # autotuner arbitrates inside the region at ~zero wall-time cost.
         if (
             device_type == "mps"
             and ndim == 2
@@ -1117,8 +1122,8 @@ def convolution(
             and V.graph.sizevars.statically_known_equals(kernel_shape[1], 3)
             and is_ones(stride)
             and is_ones(dilation)
-            and V.graph.sizevars.statically_known_geq(in_chan, 128)
-            and V.graph.sizevars.statically_known_geq(out_chan, 128)
+            and V.graph.sizevars.statically_known_geq(in_chan, 96)
+            and V.graph.sizevars.statically_known_geq(out_chan, 96)
         ):
             choices.append(
                 ext_kn_winograd.bind(
@@ -1633,7 +1638,7 @@ def convolution_backward_lowering(
                 and kernel_shape == [3, 3]
                 and is_ones(stride)
                 and is_ones(dilation)
-                and min(in_chan, out_chan) >= 128
+                and min(in_chan, out_chan) >= 96
             ):
                 has_triton_dw_choices = True
                 choices_dw.append(
@@ -1769,7 +1774,7 @@ def convolution_backward_lowering(
                 and kernel_shape == [3, 3]
                 and is_ones(stride)
                 and is_ones(dilation)
-                and min(in_chan, out_chan) >= 128
+                and min(in_chan, out_chan) >= 96
             ):
                 has_triton_dx_choices = True
                 choices_dx.append(
