@@ -15234,6 +15234,18 @@
     MPS: _scaled_dot_product_attention_math_mps
   tags: nondeterministic_seeded
 
+# Returns logsumexp alongside the output so backward can recompute softmax from
+# it instead of reading a materialised S x S score matrix. The math_for_mps op
+# above cannot serve training because it returns attention weights, not the
+# log-sum-exp, and it has no derivative.
+- func: _scaled_dot_product_attention_flash_mps(Tensor query, Tensor key, Tensor value, bool is_causal=False, *, float? scale=None) -> (Tensor output, Tensor logsumexp)
+  dispatch:
+    MPS: _scaled_dot_product_attention_flash_mps
+
+- func: _scaled_dot_product_attention_flash_mps_backward(Tensor grad_out, Tensor query, Tensor key, Tensor value, Tensor output, Tensor logsumexp, bool is_causal=False, *, float? scale=None) -> (Tensor grad_query, Tensor grad_key, Tensor grad_value)
+  dispatch:
+    MPS: _scaled_dot_product_attention_flash_mps_backward
+
 - func: _scaled_dot_product_flash_attention(Tensor query, Tensor key, Tensor value, float dropout_p=0.0, bool is_causal=False, bool return_debug_mask=False, *, float? scale=None) -> (Tensor output, Tensor logsumexp, Tensor cum_seq_q, Tensor cum_seq_k, SymInt max_q, SymInt max_k, Tensor rng_state, Tensor unused, Tensor debug_attn_mask)
   dispatch:
     CUDA: _scaled_dot_product_flash_attention_cuda

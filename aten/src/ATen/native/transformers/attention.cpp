@@ -6,6 +6,7 @@
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
 #include <ATen/mps/MPSDevice.h>
+#include <c10/util/env.h>
 #include <ATen/native/DispatchStub.h>
 #include <ATen/NestedTensorImpl.h>
 #include <ATen/TensorIndexing.h>
@@ -34,6 +35,7 @@
 #include <ATen/ops/_nested_from_padded.h>
 #include <ATen/ops/_nested_tensor_softmax_with_shape.h>
 #include <ATen/ops/_scaled_dot_product_attention_math.h>
+#include <ATen/ops/_scaled_dot_product_attention_flash_mps.h>
 #include <ATen/ops/_scaled_dot_product_attention_math_for_mps.h>
 #include <ATen/ops/_scaled_dot_product_attention_math_for_mps_native.h>
 #include <ATen/ops/_scaled_dot_product_attention_math_native.h>
@@ -810,7 +812,24 @@ Tensor scaled_dot_product_attention(
     }
     case SDPBackend::math: {
       const bool any_inputs_require_grad = query_.requires_grad() || key.requires_grad() || value.requires_grad();
-      if (query_device_type == c10::kMPS && !(at::GradMode::is_enabled() && any_inputs_require_grad)) {
+      const bool needs_grad = at::GradMode::is_enabled() && any_inputs_require_grad;
+      // Training on MPS otherwise falls through to the decomposition below,
+      // which materialises an S x S score matrix per head. The flash op has a
+      // derivative and saves only the log-sum-exp, so backward recomputes the
+      // softmax instead of reading that matrix back.
+      //
+      // Behind a flag until the backward kernels have corpus coverage.
+      static const bool use_flash_mps =
+          c10::utils::check_env("TORCH_MPS_FLASH_SDPA_TRAIN").value_or(false);
+      if (use_flash_mps && query_device_type == c10::kMPS && needs_grad &&
+          !attn_mask.has_value() && dropout_p == 0.0 && !enable_gqa &&
+          query_.dim() == 4 && query_.sym_size(1) == key.sym_size(1) &&
+          // The backward kernels hold a head_dim-sized accumulator per thread.
+          query_.sym_size(3) <= 64) {
+        return std::get<0>(at::_scaled_dot_product_attention_flash_mps(
+            query_, key, value, is_causal, scale));
+      }
+      if (query_device_type == c10::kMPS && !needs_grad) {
         return std::get<0>(at::_scaled_dot_product_attention_math_for_mps(
             query_,
             key,

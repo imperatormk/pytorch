@@ -8,3 +8,5 @@ using namespace metal;
 #include <ATen/native/mps/kernels/DecodeAttention.h>
 #include <ATen/native/mps/kernels/MppAttention.h>
 #include <ATen/native/mps/kernels/PrefillAttention.h>
+// Must follow PrefillAttention.h: reuses its BaseMMAFrag / MMATile / tile_matmad.
+#include <ATen/native/mps/kernels/FlashAttentionBackward.h>
