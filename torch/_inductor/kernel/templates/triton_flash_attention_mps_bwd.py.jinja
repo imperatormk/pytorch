@@ -1,0 +1,143 @@
+{{def_kernel("Q", "K", "V", "DO", "LSE", "DELTA", "DQ", "DV")}}
+    stride_qz, stride_qh, stride_qm, stride_qk = {{stride("Q")}}
+    stride_kz, stride_kh, stride_kn, stride_kk = {{stride("K")}}
+    stride_vz, stride_vh, stride_vn, stride_vk = {{stride("V")}}
+    stride_oz, stride_oh, stride_om, stride_ok = {{stride("DO")}}
+    stride_lz, stride_lh, stride_lm = {{stride("LSE")}}
+    stride_dqz, stride_dqh, stride_dqm, stride_dqk = {{stride("DQ")}}
+    stride_dvz, stride_dvh, stride_dvn, stride_dvk = {{stride("DV")}}
+
+    Z = {{size("Q", 0)}}
+    HQ = {{size("Q", 1)}}
+    Q_LEN = {{size("Q", 2)}}
+    KV_LEN = {{size("K", 2)}}
+
+    # Two phases in one grid, the same shape flex attention's backward uses.
+    # Accumulating a gradient that several programs contribute to would need
+    # atomics; instead each phase is parallelised over the axis it owns, so
+    # every output is written exactly once with a plain store:
+    #   phase 1, one program per QUERY block -> dQ
+    #   phase 2, one program per KEY block   -> dK (store_output) and dV
+    N_Q_BLOCKS = tl.cdiv(Q_LEN, BLOCK_M)
+    pid = tl.program_id(0)
+    off_hz = tl.program_id(1)
+    off_z = off_hz // HQ
+    off_h = off_hz % HQ
+
+    qb = Q + off_z * stride_qz + off_h * stride_qh
+    kb = K + off_z * stride_kz + off_h * stride_kh
+    vb = V + off_z * stride_vz + off_h * stride_vh
+    dob = DO + off_z * stride_oz + off_h * stride_oh
+    lb = LSE + off_z * stride_lz + off_h * stride_lh
+    db = DELTA + off_z * stride_lz + off_h * stride_lh
+
+    offs_d = tl.arange(0, HEAD_DIM)
+    d_mask = offs_d < HEAD_DIM_REAL
+
+    if pid < N_Q_BLOCKS:
+        # ---- phase 1: dQ for one query block, looping over keys.
+        start_m = pid
+        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        m_mask = offs_m < Q_LEN
+
+        q = tl.load(qb + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk,
+                    mask=m_mask[:, None] & d_mask[None, :], other=0.0)
+        do = tl.load(dob + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok,
+                     mask=m_mask[:, None] & d_mask[None, :], other=0.0)
+        lse = tl.load(lb + offs_m * stride_lm, mask=m_mask, other=float("inf"))
+        delta = tl.load(db + offs_m * stride_lm, mask=m_mask, other=0.0)
+
+        dq = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+
+        # Under causal masking a query attends only to keys at or before it, so
+        # the loop stops at the diagonal instead of masking work already done.
+        if IS_CAUSAL:
+            n_hi = tl.minimum((start_m + 1) * BLOCK_M, KV_LEN)
+        else:
+            n_hi = KV_LEN
+
+        for start_n in range(0, n_hi, BLOCK_N):
+            offs_n = start_n + tl.arange(0, BLOCK_N)
+            n_mask = offs_n < KV_LEN
+            k = tl.load(kb + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kk,
+                        mask=n_mask[:, None] & d_mask[None, :], other=0.0)
+            v = tl.load(vb + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk,
+                        mask=n_mask[:, None] & d_mask[None, :], other=0.0)
+
+            # Scores are recomputed from the saved log-sum-exp rather than read
+            # back, which is what keeps the S x S matrix out of memory.
+            qk = tl.dot(q, tl.trans(k)) * SM_SCALE
+            valid = m_mask[:, None] & n_mask[None, :]
+            if IS_CAUSAL:
+                valid = valid & (offs_m[:, None] >= offs_n[None, :])
+            p = tl.where(valid, tl.exp(qk - lse[:, None]), 0.0)
+
+            dp = tl.dot(do, tl.trans(v))
+            ds = tl.where(valid, p * (dp - delta[:, None]) * SM_SCALE, 0.0)
+            dq += tl.dot(ds.to(k.dtype), k)
+
+        tl.store(
+            DQ + off_z * stride_dqz + off_h * stride_dqh
+            + offs_m[:, None] * stride_dqm + offs_d[None, :] * stride_dqk,
+            dq,
+            mask=m_mask[:, None] & d_mask[None, :],
+        )
+        # Phase 1 writes no dK; the store_output below is skipped for these
+        # programs by giving it an all-false mask.
+        offs_n_out = tl.arange(0, BLOCK_N)
+        dk = tl.zeros([BLOCK_N, HEAD_DIM], dtype=tl.float32)
+        out_mask = (offs_n_out[:, None] < 0) & (offs_d[None, :] >= 0)
+    else:
+        # ---- phase 2: dK and dV for one key block, looping over queries.
+        start_n = pid - N_Q_BLOCKS
+        offs_n_out = start_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        n_mask = offs_n_out < KV_LEN
+
+        k = tl.load(kb + offs_n_out[:, None] * stride_kn + offs_d[None, :] * stride_kk,
+                    mask=n_mask[:, None] & d_mask[None, :], other=0.0)
+        v = tl.load(vb + offs_n_out[:, None] * stride_vn + offs_d[None, :] * stride_vk,
+                    mask=n_mask[:, None] & d_mask[None, :], other=0.0)
+
+        dk = tl.zeros([BLOCK_N, HEAD_DIM], dtype=tl.float32)
+        dv = tl.zeros([BLOCK_N, HEAD_DIM], dtype=tl.float32)
+
+        if IS_CAUSAL:
+            m_lo = (start_n * BLOCK_N // BLOCK_M) * BLOCK_M
+        else:
+            m_lo = 0
+
+        for start_m in range(m_lo, Q_LEN, BLOCK_M):
+            offs_m = start_m + tl.arange(0, BLOCK_M)
+            m_mask = offs_m < Q_LEN
+            q = tl.load(qb + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk,
+                        mask=m_mask[:, None] & d_mask[None, :], other=0.0)
+            do = tl.load(dob + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok,
+                         mask=m_mask[:, None] & d_mask[None, :], other=0.0)
+            lse = tl.load(lb + offs_m * stride_lm, mask=m_mask, other=float("inf"))
+            delta = tl.load(db + offs_m * stride_lm, mask=m_mask, other=0.0)
+
+            qk = tl.dot(q, tl.trans(k)) * SM_SCALE
+            valid = m_mask[:, None] & n_mask[None, :]
+            if IS_CAUSAL:
+                valid = valid & (offs_m[:, None] >= offs_n_out[None, :])
+            p = tl.where(valid, tl.exp(qk - lse[:, None]), 0.0)
+
+            dv += tl.dot(tl.trans(p.to(do.dtype)), do)
+            dp = tl.dot(do, tl.trans(v))
+            ds = tl.where(valid, p * (dp - delta[:, None]) * SM_SCALE, 0.0)
+            dk += tl.dot(tl.trans(ds.to(q.dtype)), q)
+
+        tl.store(
+            DV + off_z * stride_dvz + off_h * stride_dvh
+            + offs_n_out[:, None] * stride_dvn + offs_d[None, :] * stride_dvk,
+            dv,
+            mask=n_mask[:, None] & d_mask[None, :],
+        )
+        out_mask = n_mask[:, None] & d_mask[None, :]
+
+    idx_z = off_z
+    idx_h = off_h
+    idx_n = offs_n_out[:, None]
+    idx_d = offs_d[None, :]
+    mask = out_mask
+    {{store_output(("idx_z", "idx_h", "idx_n", "idx_d"), "dk", "mask", val_shape=("BLOCK_N", "HEAD_DIM"))}}

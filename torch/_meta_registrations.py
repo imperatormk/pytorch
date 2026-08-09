@@ -6646,6 +6646,40 @@ def meta__scaled_dot_product_efficient_attention(
     return res, logsum_exp, seed, offset
 
 
+@register_meta([aten._scaled_dot_product_attention_flash_mps])
+def meta__scaled_dot_product_attention_flash_mps(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    is_causal: bool = False,
+    scale: float | None = None,
+):
+    B, H, q_len, _ = query.shape
+    out = torch.empty_like(query, memory_format=torch.contiguous_format)
+    # float32 regardless of input dtype: the log-sum-exp is accumulated in
+    # AccumType so backward can reconstruct the softmax without losing range.
+    logsumexp = query.new_empty((B, H, q_len), dtype=torch.float)
+    return out, logsumexp
+
+
+@register_meta([aten._scaled_dot_product_attention_flash_mps_backward])
+def meta__scaled_dot_product_attention_flash_mps_backward(
+    grad_out: Tensor,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    out: Tensor,
+    logsumexp: Tensor,
+    is_causal: bool = False,
+    scale: float | None = None,
+):
+    return (
+        torch.empty_like(query, memory_format=torch.contiguous_format),
+        torch.empty_like(key, memory_format=torch.contiguous_format),
+        torch.empty_like(value, memory_format=torch.contiguous_format),
+    )
+
+
 @register_meta(
     [
         aten._scaled_dot_product_efficient_attention_backward,

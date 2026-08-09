@@ -762,7 +762,17 @@ Tensor scaled_dot_product_attention(
     return out + (query_.sum() + key.sum() + value.sum()) * 0;
   }
   int64_t choice_int = static_cast<int64_t>(sdp::SDPBackend::math);
-  if (_fused_sdp_choice_stub.is_device_supported(query_.device().type())) {
+  // _fused_sdp_choice_stub has no MPS registration, so the block below is
+  // skipped on MPS and the choice would otherwise stay `math`.
+  if (query_.device().type() == c10::kMPS &&
+      c10::utils::check_env("TORCH_MPS_FLASH_SDPA_TRAIN").value_or(false) &&
+      at::GradMode::is_enabled() &&
+      (query_.requires_grad() || key.requires_grad() || value.requires_grad()) &&
+      !attn_mask_.has_value() && dropout_p == 0.0 && !enable_gqa &&
+      query_.dim() == 4 && query_.sym_size(1) == key.sym_size(1) &&
+      query_.sym_size(3) <= 64 && c10::isFloatingType(query_.scalar_type())) {
+    choice_int = static_cast<int64_t>(sdp::SDPBackend::flash_attention);
+  } else if (_fused_sdp_choice_stub.is_device_supported(query_.device().type())) {
     choice_int = _fused_sdp_choice_stub(query_.device().type(),
           query_, key, value, attn_mask_, dropout_p, is_causal, scale, enable_gqa);
   }
@@ -791,6 +801,10 @@ Tensor scaled_dot_product_attention(
             query_padded, key_padded, value_padded, dropout_p, is_causal, false /*return_debug_mask*/, og_scale.guard_float("attention.cpp", 735));
         return post_process_flash_output(std::get<0>(out_lse_softmax), og_size);
       }
+      if (query_device_type == DeviceType::MPS) {
+        return std::get<0>(at::_scaled_dot_product_attention_flash_mps(
+            query_, key, value, is_causal, scale));
+      }
       // For the CPU case we do not need to pad the last dim
       return std::get<0>(at::_scaled_dot_product_flash_attention_for_cpu(
           query_, key, value, dropout_p, is_causal, attn_mask, scale));
@@ -813,22 +827,6 @@ Tensor scaled_dot_product_attention(
     case SDPBackend::math: {
       const bool any_inputs_require_grad = query_.requires_grad() || key.requires_grad() || value.requires_grad();
       const bool needs_grad = at::GradMode::is_enabled() && any_inputs_require_grad;
-      // Training on MPS otherwise falls through to the decomposition below,
-      // which materialises an S x S score matrix per head. The flash op has a
-      // derivative and saves only the log-sum-exp, so backward recomputes the
-      // softmax instead of reading that matrix back.
-      //
-      // Behind a flag until the backward kernels have corpus coverage.
-      static const bool use_flash_mps =
-          c10::utils::check_env("TORCH_MPS_FLASH_SDPA_TRAIN").value_or(false);
-      if (use_flash_mps && query_device_type == c10::kMPS && needs_grad &&
-          !attn_mask.has_value() && dropout_p == 0.0 && !enable_gqa &&
-          query_.dim() == 4 && query_.sym_size(1) == key.sym_size(1) &&
-          // The backward kernels hold a head_dim-sized accumulator per thread.
-          query_.sym_size(3) <= 64) {
-        return std::get<0>(at::_scaled_dot_product_attention_flash_mps(
-            query_, key, value, is_causal, scale));
-      }
       if (query_device_type == c10::kMPS && !needs_grad) {
         return std::get<0>(at::_scaled_dot_product_attention_math_for_mps(
             query_,

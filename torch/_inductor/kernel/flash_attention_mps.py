@@ -66,6 +66,25 @@ flash_template = TritonTemplate(
 )
 
 
+@SymbolicGridFn
+def flash_bwd_grid(batch, heads, q_len, kv_len, head_dim, meta, *, cdiv):
+    # Two phases share one grid: query blocks first (dQ), then key blocks
+    # (dK/dV), so each gradient is written by exactly one program and none of
+    # them needs an atomic accumulate.
+    return (
+        cdiv(q_len, meta["BLOCK_M"]) + cdiv(kv_len, meta["BLOCK_N"]),
+        batch * heads,
+        1,
+    )
+
+
+flash_bwd_template = TritonTemplate(
+    name="flash_attention_mps_bwd",
+    grid=flash_bwd_grid,
+    source=load_kernel_template("triton_flash_attention_mps_bwd"),
+)
+
+
 # Apple's hard threadgroup-memory cap. A dot whose two operand tiles do not
 # both fit is denied in-place aliasing and falls back to a per-fragment device
 # path, which measures 5-16% of the MMA ceiling against 36-43% for a tile that
@@ -263,3 +282,135 @@ def scaled_dot_product_attention_math_for_mps(
         "flash_attention_mps", choices, [query, key, value, attn_mask], layout
     )
     return out, None
+
+
+def _bwd_configs(kv_len, head_dim):
+    """Small tiles win on this backend; the sweep mirrors the forward's."""
+    out = []
+    for block_m in (16, 32, 64):
+        for block_n in (16, 32, 64):
+            for num_warps in (2, 4):
+                if block_n > kv_len:
+                    continue
+                if not _fits_threadgroup_budget(block_m, block_n, head_dim):
+                    continue
+                out.append((block_m, block_n, num_warps))
+    return out
+
+
+@register_lowering(aten._scaled_dot_product_attention_flash_mps_backward)
+def scaled_dot_product_attention_flash_mps_backward(
+    grad_out,
+    query,
+    key,
+    value,
+    output,
+    logsumexp,
+    is_causal=False,
+    scale=None,
+):
+    """Triton backward for the MPS flash op.
+
+    The op exists so that training has an attention node at all: sdpa on MPS
+    decomposes before inductor sees it unless a derivative is registered, which
+    is why there was previously nothing here to lower.
+    """
+    from ..lowering import empty_strided, mul, sum_ as reduce_sum, to_dtype
+
+    B, H, q_len, head_dim = query.get_size()
+    kv_len = key.get_size()[2]
+
+    if not isinstance(head_dim, (int, sympy.Integer)) or int(head_dim) > 128:
+        return _bwd_fallback(
+            grad_out, query, key, value, output, logsumexp, is_causal, scale
+        )
+    head_dim = int(head_dim)
+    # tl.arange needs a power of two, so the tail lanes are padded and masked.
+    head_dim_pad = 1 << (head_dim - 1).bit_length()
+
+    sm_scale = (1.0 / (head_dim**0.5)) if scale is None else scale
+
+    for t in (grad_out, query, key, value, output, logsumexp):
+        t.realize()
+
+    # delta = rowsum(dO * O), the term that makes ds = P * (dP - delta) correct
+    # for a softmax whose normaliser depends on every score in the row. Left to
+    # the pointwise scheduler rather than folded into the template: it is a
+    # single cheap reduction and fuses with its neighbours.
+    delta = reduce_sum(
+        mul(to_dtype(grad_out, torch.float32), to_dtype(output, torch.float32)),
+        axis=-1,
+    )
+    delta.realize()
+
+    layout_k = FixedLayout(
+        key.get_device(),
+        key.get_dtype(),
+        [B, H, kv_len, head_dim],
+        FlexibleLayout.contiguous_strides([B, H, kv_len, head_dim]),
+    )
+
+    grad_query = empty_strided(
+        query.get_size(),
+        FlexibleLayout.contiguous_strides(query.get_size()),
+        dtype=query.get_dtype(),
+        device=query.get_device(),
+    )
+    grad_value = empty_strided(
+        value.get_size(),
+        FlexibleLayout.contiguous_strides(value.get_size()),
+        dtype=value.get_dtype(),
+        device=value.get_device(),
+    )
+    # realize_inputs unwraps to StorageBox, which is not a valid lowering
+    # return; keep the TensorBox handles and realize copies for the template.
+    grad_query.realize()
+    grad_value.realize()
+
+    choices = []
+    for block_m, block_n, num_warps in _bwd_configs(kv_len, head_dim_pad):
+        flash_bwd_template.maybe_append_choice(
+            choices,
+            input_nodes=(
+                query,
+                key,
+                value,
+                grad_out,
+                logsumexp,
+                delta,
+                grad_query,
+                grad_value,
+            ),
+            layout=layout_k,
+            mutated_inputs=[grad_query, grad_value],
+            call_sizes=[B, H, q_len, kv_len, head_dim_pad],
+            num_stages=2,
+            num_warps=num_warps,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            HEAD_DIM=head_dim_pad,
+            HEAD_DIM_REAL=head_dim,
+            SM_SCALE=sm_scale,
+            IS_CAUSAL=is_causal,
+        )
+
+    if not choices:
+        return _bwd_fallback(
+            grad_out, query, key, value, output, logsumexp, is_causal, scale
+        )
+
+    grad_key, _ = autotune_select_algorithm(
+        "flash_attention_mps_bwd",
+        choices,
+        [query, key, value, grad_out, logsumexp, delta, grad_query, grad_value],
+        layout_k,
+    )
+    return grad_query, grad_key, grad_value
+
+
+def _bwd_fallback(grad_out, query, key, value, output, logsumexp, is_causal, scale):
+    from ..lowering import fallback_handler
+
+    return fallback_handler(
+        aten._scaled_dot_product_attention_flash_mps_backward.default
+    )(grad_out, query, key, value, output, logsumexp, is_causal, scale=scale)
