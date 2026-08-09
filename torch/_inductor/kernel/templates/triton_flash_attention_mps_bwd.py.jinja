@@ -1,4 +1,6 @@
-{{def_kernel("Q", "K", "V", "DO", "LSE", "DELTA", "DQ", "DV")}}
+{{def_kernel("Q", "K", "V", "DO", "O", "LSE", "DELTA", "DQ", "DV")}}
+    # O is bound so this template and the extern aten choice share one input
+    # list; delta is precomputed, so the output tensor itself is unused here.
     stride_qz, stride_qh, stride_qm, stride_qk = {{stride("Q")}}
     stride_kz, stride_kh, stride_kn, stride_kk = {{stride("K")}}
     stride_vz, stride_vh, stride_vn, stride_vk = {{stride("V")}}

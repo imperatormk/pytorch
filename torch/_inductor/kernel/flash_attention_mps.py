@@ -46,6 +46,30 @@ def _aten_sdpa_mps(query, key, value, attn_mask, *, scale, is_causal, has_mask):
     )[0]
 
 
+def _aten_sdpa_mps_bwd_dk(
+    query, key, value, grad_out, output, logsumexp, delta, grad_query,
+    grad_value, *, scale, is_causal
+):
+    # Competes with the Triton template, so it has to present the same shape:
+    # one returned tensor (dK) plus dQ/dV written into the mutated buffers. It
+    # recomputes delta internally, which is why the precomputed one is unused.
+    del delta
+    dq, dk, dv = aten._scaled_dot_product_attention_flash_mps_backward.default(
+        grad_out, query, key, value, output, logsumexp, is_causal, scale=scale
+    )
+    grad_query.copy_(dq)
+    grad_value.copy_(dv)
+    return dk
+
+
+aten_sdpa_mps_bwd = ExternKernelChoice(
+    _aten_sdpa_mps_bwd_dk,
+    None,
+    name="sdpa_flash_mps_backward",
+    has_out_variant=False,
+)
+
+
 aten_sdpa_mps = ExternKernelChoice(
     _aten_sdpa_mps,
     None,
@@ -385,6 +409,7 @@ def scaled_dot_product_attention_flash_mps_backward(
                 key,
                 value,
                 grad_out,
+                output,
                 logsumexp,
                 delta,
                 grad_query,
@@ -403,6 +428,20 @@ def scaled_dot_product_attention_flash_mps_backward(
             IS_CAUSAL=is_causal,
         )
 
+    # The ATen kernel competes rather than only serving as a fallback, so which
+    # implementation runs is a per-shape autotune decision instead of one this
+    # code makes.
+    if _use_autotune_backend("ATEN") or config.max_autotune or config.max_autotune_gemm:
+        choices.append(
+            aten_sdpa_mps_bwd.bind(
+                (query, key, value, grad_out, output, logsumexp, delta,
+                 grad_query, grad_value),
+                layout_k,
+                scale=sm_scale,
+                is_causal=is_causal,
+            )
+        )
+
     if not choices:
         return _bwd_fallback(
             grad_out, query, key, value, output, logsumexp, is_causal, scale
@@ -411,7 +450,8 @@ def scaled_dot_product_attention_flash_mps_backward(
     grad_key, _ = autotune_select_algorithm(
         "flash_attention_mps_bwd",
         choices,
-        [query, key, value, grad_out, logsumexp, delta, grad_query, grad_value],
+        [query, key, value, grad_out, output, logsumexp, delta, grad_query,
+         grad_value],
         layout_k,
     )
     return grad_query, grad_key, grad_value
