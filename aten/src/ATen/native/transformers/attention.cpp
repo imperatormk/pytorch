@@ -6,7 +6,6 @@
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
 #include <ATen/mps/MPSDevice.h>
-#include <c10/util/env.h>
 #include <ATen/native/DispatchStub.h>
 #include <ATen/NestedTensorImpl.h>
 #include <ATen/TensorIndexing.h>
@@ -763,9 +762,13 @@ Tensor scaled_dot_product_attention(
   }
   int64_t choice_int = static_cast<int64_t>(sdp::SDPBackend::math);
   // _fused_sdp_choice_stub has no MPS registration, so the block below is
-  // skipped on MPS and the choice would otherwise stay `math`.
+  // skipped on MPS and the choice would otherwise stay `math` -- which is
+  // CompositeImplicitAutograd, and AOTAutograd decomposes it before any backend
+  // branch runs, so training could never reach a fused attention kernel.
+  //
+  // Training only: inference already has a fast path further down, and this op
+  // exists to carry the log-sum-exp that gives backward a derivative.
   if (query_.device().type() == c10::kMPS &&
-      c10::utils::check_env("TORCH_MPS_FLASH_SDPA_TRAIN").value_or(false) &&
       at::GradMode::is_enabled() &&
       (query_.requires_grad() || key.requires_grad() || value.requires_grad()) &&
       !attn_mask_.has_value() && dropout_p == 0.0 && !enable_gqa &&
