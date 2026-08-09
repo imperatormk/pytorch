@@ -773,7 +773,7 @@ Tensor scaled_dot_product_attention(
       (query_.requires_grad() || key.requires_grad() || value.requires_grad()) &&
       !attn_mask_.has_value() && dropout_p == 0.0 && !enable_gqa &&
       query_.dim() == 4 && query_.sym_size(1) == key.sym_size(1) &&
-      query_.sym_size(3) <= 64 && c10::isFloatingType(query_.scalar_type())) {
+      query_.sym_size(3) <= 128 && c10::isFloatingType(query_.scalar_type())) {
     choice_int = static_cast<int64_t>(sdp::SDPBackend::flash_attention);
   } else if (_fused_sdp_choice_stub.is_device_supported(query_.device().type())) {
     choice_int = _fused_sdp_choice_stub(query_.device().type(),

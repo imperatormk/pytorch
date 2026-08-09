@@ -721,6 +721,12 @@ INSTANTIATE_FLASH_BWD_NAMED("", half, 16, 16, 64, 2, 2, 128)
 // halves the inner pass count against the BD=64 variant.
 INSTANTIATE_FLASH_BWD_NAMED("_d40", float, 32, 16, 40, 2, 2, 128)
 INSTANTIATE_FLASH_BWD_NAMED("_d40", half, 32, 16, 40, 2, 2, 128)
+// head_dim 128 doubles LD, so the 16-wide tiles above would need 43136 bytes.
+// Halving both tiles brings it to 21056. BQ=BK=8 is one fragment per axis, so
+// the warp grid has to be 1x1: 2x2 leaves three of four warps with no band and
+// the dK/dV accumulators come out wrong.
+INSTANTIATE_FLASH_BWD_NAMED("_d128", float, 8, 8, 128, 1, 1, 32)
+INSTANTIATE_FLASH_BWD_NAMED("_d128", half, 8, 8, 128, 1, 1, 32)
 
 #define INSTANTIATE_FLASH_BWD_FUSED(SUF, DTYPE, BQ, BK, BD, WM, WN)              \
   template [[host_name("flash_attn_bwd_fused" SUF "_" #DTYPE)]] [[kernel]] void  \

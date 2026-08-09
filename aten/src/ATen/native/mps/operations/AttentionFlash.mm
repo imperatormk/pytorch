@@ -51,7 +51,7 @@ constexpr int64_t kKeyTile = 8192;
 constexpr int64_t kBlockQ = 16;
 constexpr int64_t kBlockK = 16;
 constexpr int64_t kThreads = 128;
-constexpr int64_t kMaxHeadDim = 64;
+constexpr int64_t kMaxHeadDim = 128;
 constexpr int64_t kFusedBlockK = 32;
 
 // Must match FlashAttnBwdParams in kernels/FlashAttentionBackward.h.
@@ -211,8 +211,14 @@ std::tuple<Tensor, Tensor, Tensor> _scaled_dot_product_attention_flash_mps_backw
   // buffers leave enough of the 32768-byte threadgroup budget for it, which
   // halves the inner pass count.
   const bool d40 = (D <= 40);
-  const std::string suffix = d40 ? "_d40" : "";
-  const int64_t blockQ = d40 ? 32 : kBlockQ;
+  // head_dim 128 doubles the staging rows, so it needs 8-wide tiles to stay
+  // under the threadgroup cap, and a single warp because that leaves one
+  // fragment per axis.
+  const bool d128 = (D > 64);
+  const std::string suffix = d40 ? "_d40" : (d128 ? "_d128" : "");
+  const int64_t blockQ = d40 ? 32 : (d128 ? 8 : kBlockQ);
+  const int64_t blockK = d128 ? 8 : kBlockK;
+  const int64_t threads = d128 ? 32 : kThreads;
   auto preprocessPSO =
       lib.getPipelineStateForFunc("flash_attn_bwd_preprocess" + suffix + "_" + dtype);
   // Key-parallel is the faster of the two backward layouts here: a
@@ -227,7 +233,7 @@ std::tuple<Tensor, Tensor, Tensor> _scaled_dot_product_attention_flash_mps_backw
       "flash_attn_bwd_dkdv" + suffix + causal + "_" + dtype);
 
   const int64_t nQ = (S + blockQ - 1) / blockQ;
-  const int64_t nK = (KV + kBlockK - 1) / kBlockK;
+  const int64_t nK = (KV + blockK - 1) / blockK;
   MPSStream* stream = getCurrentMPSStream();
   dispatch_sync_with_rethrow(stream->queue(), ^{
     @autoreleasepool {
@@ -236,12 +242,12 @@ std::tuple<Tensor, Tensor, Tensor> _scaled_dot_product_attention_flash_mps_backw
       [enc setComputePipelineState:preprocessPSO];
       mtl_setArgs(enc, o, go, delta, params);
       [enc dispatchThreadgroups:MTLSizeMake(nQ, 1, B * H)
-          threadsPerThreadgroup:MTLSizeMake(kThreads, 1, 1)];
+          threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
 
       [enc setComputePipelineState:bwdPSO];
       mtl_setArgs(enc, q, k, v, go, lse, delta, dk, dv, dq, params);
       [enc dispatchThreadgroups:MTLSizeMake(nK, 1, B * H)
-          threadsPerThreadgroup:MTLSizeMake(kThreads, 1, 1)];
+          threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
     }
   });
 
