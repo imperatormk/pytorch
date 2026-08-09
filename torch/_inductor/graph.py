@@ -110,7 +110,9 @@ from .sizevars import SizeVarAllocator
 from .utils import (
     gather_origins,
     get_cloned_parameter_buffer_name,
+    get_device_tflops,
     get_donated_idxs,
+    get_gpu_dram_gbps,
     get_sympy_Expr_dtype,
     GraphPartitionMap,
     is_same_tensor,
@@ -786,6 +788,32 @@ class GraphLowering(torch.fx.Interpreter):
         Decide if we should enable layout optimization for this graph based on
         heuristics.
         """
+
+        def _weight_relayout_flop_equivalent(conv_nodes: list[Any]) -> float:
+            """FLOP-equivalent cost of re-laying-out conv weights every call.
+
+            Only weights with a spatial extent count: 1x1 kernels are already
+            contiguous in channels-last order and are not transformed.
+            """
+            relayout_bytes = 0
+            for node in conv_nodes:
+                weight = node.args[1].meta.get("val")
+                if not isinstance(weight, torch.Tensor) or weight.dim() < 3:
+                    continue
+                if all(k == 1 for k in weight.shape[2:]):
+                    continue
+                relayout_bytes += 2 * weight.numel() * weight.element_size()
+            if not relayout_bytes:
+                return 0.0
+            try:
+                tflops = get_device_tflops(torch.float32)
+                gbps = get_gpu_dram_gbps()
+            except Exception:
+                return 0.0
+            if not tflops or not gbps or gbps <= 0:
+                return 0.0
+            return relayout_bytes * (tflops * 1e12) / (gbps * 1e9)
+
         if not config.layout_optimization:
             return False
 
@@ -889,7 +917,16 @@ class GraphLowering(torch.fx.Interpreter):
                 + flop_counts["in_out"] * IN_OUT_MULTIPLIER
                 + flop_counts["default"] * DEFAULT_MULTIPLIER
             )
-            do_layout_opt = weighted_flops <= total_flops
+
+            # The multipliers above are measured per-conv and so exclude a cost
+            # the layout choice itself creates: require_channels_last re-lays out
+            # every conv weight on each call (kernel/conv.py). Price that traffic
+            # against the same FLOP budget via the machine's compute:bandwidth
+            # ratio. Measured on an M4: the corpus models are all far on the
+            # profitable side of this term, so it changes no decision there --
+            # it bounds the case where a graph's weights dwarf its activations.
+            relayout_flops = _weight_relayout_flop_equivalent(conv_nodes)
+            do_layout_opt = weighted_flops + relayout_flops <= total_flops
             if not do_layout_opt:
                 log.debug(
                     "Skipped layout opt in inference because weighted flops indicate slowdown, default: %d, channels last: %d",
