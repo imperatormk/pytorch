@@ -2255,10 +2255,13 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # that leave aten the only choice. Replace with tiles whose double-
         # buffered (BM*BK + BK*BN) f32 staging fits 32KB.
         self.conv_configs = [
-            # NOTE: ConvConfig(16, 16, 16, 2, 1) is deliberately absent - that
-            # tile produces numerically WRONG, nondeterministic results on the
-            # Apple MMA path (e.g. 1x1 conv 128->64: err ~1.0). The same
-            # 16x16x16 num_warps=1 tile was also found broken in the GEMM sweep.
+            # NOTE: ConvConfig(16, 16, 16, 2, 1) is deliberately absent, but for
+            # cost, not correctness. Re-measured under
+            # TORCHINDUCTOR_VERIFY_ALL_CHOICES over 12 shapes including 7 ragged
+            # ones: 12/12 exact, and the 1x1 128->64 case an earlier note called
+            # "err ~1.0" is err 0.0. It is omitted because it wins no autotune
+            # block (every winner is 32x32/nw2 or larger), so offering it only
+            # costs compile time.
             ConvConfig(64, 128, 16, 2, 4),
             ConvConfig(64, 64, 16, 2, 4),
             ConvConfig(32, 64, 16, 2, 4),
