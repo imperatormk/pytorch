@@ -5870,6 +5870,30 @@ def scaled_dot_product_flash_attention_for_cpu(
     return output, attn
 
 
+# Same shape as the CPU op above, and excluded by inductor for the same reason:
+# the op has to survive AOT so the Triton template can claim it. This decomp is
+# what runs when that lowering declines, and it must be the ordinary softmax
+# decomposition rather than the op's ATen kernel, whose loop of matmuls measured
+# 7.98 ms against 4.72 ms for this at DiT's shape.
+@register_decomposition(aten._scaled_dot_product_attention_flash_mps.default)
+def scaled_dot_product_attention_flash_mps(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    is_causal: bool = False,
+    scale: float | None = None,
+) -> tuple[Tensor, Tensor]:
+    scale_factor = query.size(-1) ** -0.5 if scale is None else scale
+    scores = query @ key.transpose(-2, -1) * scale_factor
+    if is_causal:
+        L, S = query.size(-2), key.size(-2)
+        mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril()
+        scores = scores.masked_fill(torch.logical_not(mask), float("-inf"))
+    logsumexp = torch.logsumexp(scores.float(), dim=-1)
+    output = torch.softmax(scores, dim=-1).to(value.dtype) @ value
+    return output, logsumexp
+
+
 def register_inplace(aten_op, outplace_op):
     @register_decomposition(aten_op)
     def inplace_op(*args, **kwargs):

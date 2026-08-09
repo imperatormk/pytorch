@@ -116,28 +116,12 @@ flash_bwd_template = TritonTemplate(
 )
 
 
-# Apple's hard threadgroup-memory cap. A dot whose two operand tiles do not
-# both fit is denied in-place aliasing and falls back to a per-fragment device
-# path, which measures 5-16% of the MMA ceiling against 36-43% for a tile that
-# fits: a 7.7x cliff, not a gradient. Both of attention's dots have to fit,
-# and the QK dot is the binding one at large head_dim.
-_TG_BUDGET_BYTES = 32768
-
-
-def _fits_threadgroup_budget(block_m, block_n, head_dim, itemsize=4):
-    qk = (block_m * head_dim + head_dim * block_n) * itemsize
-    pv = (block_m * block_n + block_n * head_dim) * itemsize
-    return max(qk, pv) <= _TG_BUDGET_BYTES
-
-
 def _configs(q_len, head_dim):
     out = []
     for block_m in (16, 32, 64):
         for block_n in (16, 32, 64):
             for num_warps in (4, 8):
                 if block_m > q_len or block_n > q_len:
-                    continue
-                if not _fits_threadgroup_budget(block_m, block_n, head_dim):
                     continue
                 out.append((block_m, block_n, num_warps))
     return out or [(16, 16, 4)]
@@ -324,8 +308,6 @@ def _bwd_configs(kv_len, head_dim):
         for block_n in (16, 32, 64):
             for num_warps in (1, 2, 4, 8):
                 if block_n > kv_len:
-                    continue
-                if not _fits_threadgroup_budget(block_m, block_n, head_dim):
                     continue
                 out.append((block_m, block_n, num_warps))
     return out
