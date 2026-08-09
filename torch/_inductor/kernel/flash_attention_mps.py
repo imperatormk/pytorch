@@ -12,18 +12,46 @@ import sympy
 
 import torch
 
+from .. import config
 from ..ir import FixedLayout, FlexibleLayout
 from ..lowering import register_lowering
 from ..select_algorithm import (
     autotune_select_algorithm,
+    ExternKernelChoice,
     realize_inputs,
     SymbolicGridFn,
     TritonTemplate,
 )
+from ..utils import _use_autotune_backend
 from .mm_common import load_kernel_template
 
 
 aten = torch.ops.aten
+
+
+def _aten_sdpa_mps(query, key, value, attn_mask, *, scale, is_causal, has_mask):
+    # The aten op returns (out, attn_weights); the template produces only the
+    # output, so the extern choice has to match that layout. When there is no
+    # mask the lowering passes `query` in that slot as a placeholder, because
+    # every choice must be bound to the same input-node list.
+    return aten._scaled_dot_product_attention_math_for_mps.default(
+        query,
+        key,
+        value,
+        attn_mask if has_mask else None,
+        0.0,
+        is_causal,
+        None,
+        scale=scale,
+    )[0]
+
+
+aten_sdpa_mps = ExternKernelChoice(
+    _aten_sdpa_mps,
+    None,
+    name="sdpa_math_for_mps",
+    has_out_variant=False,
+)
 
 
 @SymbolicGridFn
@@ -103,7 +131,11 @@ def _mps_flash_supported(
             return False
         dims.append(int(d))
     head_dim = dims[3]
-    # tl.arange(0, HEAD_DIM) requires a power of two; % 8 admits 40/72/96/120.
+    # tl.arange(0, HEAD_DIM) requires a power of two, so 40/72/96/120 are
+    # rejected and fall back to aten. Padding the lane range and masking the
+    # tail would admit them, and was measured as not worth doing: the aten
+    # choice below beats this template by 4-22% at the power-of-two dims it
+    # already accepts, so admitting more dims only adds losing choices.
     if head_dim & (head_dim - 1) or head_dim > 128:
         return False
     if dims[2] % 8 or dims[6] % 8:
@@ -182,7 +214,24 @@ def scaled_dot_product_attention_math_for_mps(
         FlexibleLayout.contiguous_strides([B, H, q_len, head_dim]),
     )
 
+    # The aten kernel competes rather than only serving as a fallback for
+    # shapes the template rejects. Without it the autotuner sees Triton
+    # templates only, so an ATEN arm silently still runs Triton and the eager
+    # kernel is never timed against ours -- and the tiled template is not
+    # uniformly better: at S=1024 head_dim=80 it measures 0.797x of the
+    # decomposition, so which one wins is a per-shape question that the
+    # autotuner is already built to answer.
     choices = []
+    if _use_autotune_backend("ATEN") or config.max_autotune or config.max_autotune_gemm:
+        choices.append(
+            aten_sdpa_mps.bind(
+                (query, key, value, attn_mask),
+                layout,
+                scale=sm_scale,
+                is_causal=is_causal,
+                has_mask=has_mask,
+            )
+        )
     for block_m, block_n, num_warps in _configs(q_len, head_dim):
         flash_template.maybe_append_choice(
             choices,
