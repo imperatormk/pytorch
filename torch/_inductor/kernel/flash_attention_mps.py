@@ -78,6 +78,13 @@ def flash_bwd_grid(batch, heads, q_len, kv_len, head_dim, meta, *, cdiv):
     )
 
 
+flash_lse_template = TritonTemplate(
+    name="flash_attention_mps_lse",
+    grid=flash_grid,
+    source=load_kernel_template("triton_flash_attention_mps_lse"),
+)
+
+
 flash_bwd_template = TritonTemplate(
     name="flash_attention_mps_bwd",
     grid=flash_bwd_grid,
@@ -285,11 +292,13 @@ def scaled_dot_product_attention_math_for_mps(
 
 
 def _bwd_configs(kv_len, head_dim):
-    """Small tiles win on this backend; the sweep mirrors the forward's."""
+    """The autotuner consistently picks the smallest tile offered, and this
+    backend favours few warps (more threadgroups, fewer barriers), so the sweep
+    goes down to 1 warp rather than starting at 2."""
     out = []
     for block_m in (16, 32, 64):
         for block_n in (16, 32, 64):
-            for num_warps in (2, 4):
+            for num_warps in (1, 2, 4, 8):
                 if block_n > kv_len:
                     continue
                 if not _fits_threadgroup_budget(block_m, block_n, head_dim):
@@ -414,3 +423,84 @@ def _bwd_fallback(grad_out, query, key, value, output, logsumexp, is_causal, sca
     return fallback_handler(
         aten._scaled_dot_product_attention_flash_mps_backward.default
     )(grad_out, query, key, value, output, logsumexp, is_causal, scale=scale)
+
+
+@register_lowering(aten._scaled_dot_product_attention_flash_mps)
+def scaled_dot_product_attention_flash_mps(query, key, value, is_causal=False, scale=None):
+    """Triton forward for the MPS flash op, emitting the log-sum-exp.
+
+    Without this the op falls back to its ATen implementation, whose tiling is a
+    loop of matmuls: that measured 7.98 ms against 4.72 ms for the decomposition
+    at DiT's shape, and was the entire reason the fused path lost overall even
+    though its backward already won.
+    """
+    from ..lowering import empty_strided
+
+    B, H, q_len, head_dim = query.get_size()
+    kv_len = key.get_size()[2]
+
+    # Unlike the math_for_mps lowering this one pads the lane range to the next
+    # power of two and masks the tail, so head_dim 40 (SD1.5 UNet) is served
+    # rather than falling back to the op's ATen implementation.
+    if (
+        not isinstance(head_dim, (int, sympy.Integer))
+        or int(head_dim) > 128
+        or any(x.get_device().type != "mps" for x in (query, key, value))
+        or query.get_dtype() != torch.float32
+    ):
+        return _flash_fallback(query, key, value, is_causal, scale)
+    head_dim = int(head_dim)
+    head_dim_pad = 1 << (head_dim - 1).bit_length()
+
+    for t in (query, key, value):
+        t.realize()
+
+    sm_scale = (1.0 / (head_dim**0.5)) if scale is None else scale
+
+    layout = FixedLayout(
+        query.get_device(),
+        query.get_dtype(),
+        [B, H, q_len, head_dim],
+        FlexibleLayout.contiguous_strides([B, H, q_len, head_dim]),
+    )
+    lse = empty_strided(
+        [B, H, q_len],
+        FlexibleLayout.contiguous_strides([B, H, q_len]),
+        dtype=torch.float32,
+        device=query.get_device(),
+    )
+    lse.realize()
+
+    choices = []
+    for block_m, block_n, num_warps in _configs(q_len, head_dim_pad):
+        flash_lse_template.maybe_append_choice(
+            choices,
+            input_nodes=(query, key, value, query, lse),
+            layout=layout,
+            mutated_inputs=[lse],
+            num_stages=2,
+            num_warps=num_warps,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            HEAD_DIM=head_dim_pad,
+            HEAD_DIM_REAL=head_dim,
+            SM_SCALE=sm_scale,
+            IS_CAUSAL=is_causal,
+            HAS_MASK=False,
+        )
+
+    if not choices:
+        return _flash_fallback(query, key, value, is_causal, scale)
+
+    out, _ = autotune_select_algorithm(
+        "flash_attention_mps_lse", choices, [query, key, value, query, lse], layout
+    )
+    return out, lse
+
+
+def _flash_fallback(query, key, value, is_causal, scale):
+    from ..lowering import fallback_handler
+
+    return fallback_handler(aten._scaled_dot_product_attention_flash_mps.default)(
+        query, key, value, is_causal, scale=scale
+    )
