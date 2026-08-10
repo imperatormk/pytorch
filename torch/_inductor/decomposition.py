@@ -82,6 +82,10 @@ inductor_decompositions = get_decompositions(
         # demands a contiguous grad_output and forces a materialised transpose
         # at every call whose producer is permuted.
         aten.linear_backward,
+        # Same MPS-only story: the '#mps' autograd rule routes here instead of
+        # max_pool2d_with_indices_backward, which inductor lowers. As an extern
+        # it is a scheduling barrier that cannot fuse with its neighbours.
+        aten.max_pool2d_backward,
         aten.hardtanh,
         aten.lcm,
         aten.leaky_relu,

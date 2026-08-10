@@ -5902,6 +5902,35 @@ def linear_backward(
     return grad_input, grad_weight, grad_bias
 
 
+# max_pool2d is CompositeImplicitAutograd everywhere but MPS, which dispatches
+# it to mps_max_pool2d and so takes the '#mps' rule in derivatives.yaml. That
+# rule names max_pool2d_backward, which has neither an inductor lowering nor a
+# decomposition, where every other backend gets max_pool2d_with_indices_backward
+# and has both.
+#
+# The ATen kernel itself measures at parity with the with_indices one, so this
+# is not about a faster kernel: an extern is a scheduling barrier, and routing
+# to the lowered op lets the gradient fuse with its neighbours.
+@register_decomposition(aten.max_pool2d_backward.default)
+def max_pool2d_backward(
+    grad_output: Tensor,
+    self: Tensor,
+    kernel_size: list[int],
+    stride: list[int] | None = None,
+    padding: list[int] = (0, 0),
+    dilation: list[int] = (1, 1),
+    ceil_mode: bool = False,
+) -> Tensor:
+    if stride is None or len(stride) == 0:
+        stride = kernel_size
+    _, indices = aten.max_pool2d_with_indices(
+        self, kernel_size, stride, padding, dilation, ceil_mode
+    )
+    return aten.max_pool2d_with_indices_backward(
+        grad_output, self, kernel_size, stride, padding, dilation, ceil_mode, indices
+    )
+
+
 @register_decomposition(aten._scaled_dot_product_attention_flash_mps.default)
 def scaled_dot_product_attention_flash_mps(
     query: Tensor,
