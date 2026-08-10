@@ -5875,6 +5875,33 @@ def scaled_dot_product_flash_attention_for_cpu(
 # what runs when that lowering declines, and it must be the ordinary softmax
 # decomposition rather than the op's ATen kernel, whose loop of matmuls measured
 # 7.98 ms against 4.72 ms for this at DiT's shape.
+# MPS is the only dense backend that dispatches linear_backward, so on every
+# other backend autograd differentiates linear into plain matmuls and inductor
+# fuses them. Here the op survives as an extern whose ATen kernel demands a
+# contiguous grad_output, which forces a materialised transpose at every call
+# whose producer is permuted -- three per attention block, since dq/dk/dv come
+# out of the flash backward as [heads, seq, head_dim].
+#
+# The three products are ones inductor already lowers, so decomposing lets it
+# read the permuted grad through strides instead of copying it first.
+@register_decomposition(aten.linear_backward.default)
+def linear_backward(
+    self: Tensor,
+    grad_output: Tensor,
+    weight: Tensor,
+    output_mask: list[bool],
+) -> tuple[Tensor, Tensor, Tensor]:
+    grad_input = grad_output.matmul(weight) if output_mask[0] else None
+    grad_weight = None
+    if output_mask[1]:
+        go2 = grad_output.reshape(-1, grad_output.size(-1))
+        grad_weight = go2.t().matmul(self.reshape(-1, self.size(-1)))
+    grad_bias = None
+    if output_mask[2]:
+        grad_bias = grad_output.reshape(-1, grad_output.size(-1)).sum(0)
+    return grad_input, grad_weight, grad_bias
+
+
 @register_decomposition(aten._scaled_dot_product_attention_flash_mps.default)
 def scaled_dot_product_attention_flash_mps(
     query: Tensor,

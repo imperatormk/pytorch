@@ -78,6 +78,10 @@ inductor_decompositions = get_decompositions(
         aten.empty_like,
         aten.flip,
         aten.gelu,
+        # MPS is the only dense backend that dispatches this; as an extern it
+        # demands a contiguous grad_output and forces a materialised transpose
+        # at every call whose producer is permuted.
+        aten.linear_backward,
         aten.hardtanh,
         aten.lcm,
         aten.leaky_relu,
