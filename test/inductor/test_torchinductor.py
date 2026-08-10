@@ -9175,7 +9175,9 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 (torch.arange(-1e-5, 1e-5, 1e-7).to(dtype=dtype),),
             )
 
-    @config.patch(force_disable_caches=True)
+    # multi_kernel emits a persistent and a non-persistent variant of the same
+    # node schedule, so the kernel count these unpack is off by that factor.
+    @config.patch(force_disable_caches=True, **{"triton.multi_kernel": False})
     def test_deterministic_codegen(self):
         if "cpu" in str(self.device) and config.cpp_wrapper:
             raise unittest.SkipTest(
@@ -9226,7 +9228,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         self.assertEqual(coda_b0, coda_b2)
         self.assertEqual(coda_c0, coda_c2)
 
-    @config.patch(force_disable_caches=True)
+    @config.patch(force_disable_caches=True, **{"triton.multi_kernel": False})
     def test_deterministic_codegen_on_graph_break(self):
         if "cpu" in str(self.device) and config.cpp_wrapper:
             raise unittest.SkipTest(
@@ -9261,6 +9263,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             "max_autotune_gemm_backends": "ATEN",
             # native matmul codegens the matrix multiplication
             "triton.native_matmul": False,
+            "triton.multi_kernel": False,
         }
     )
     def test_deterministic_codegen_with_suffix(self):
