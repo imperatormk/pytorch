@@ -348,11 +348,11 @@ class profile:
                 )
             self.kineto_activities.add(ProfilerActivity.HPU)
         elif self.use_device == "mps":
-            # MPS has no dedicated kineto device-trace backend; its kernels are
-            # captured on the CPU side. Requesting MPS profiling therefore maps
-            # to the CPU activity, so add it even when MPS was the only requested
-            # activity (otherwise kineto_activities would be empty).
-            self.kineto_activities.add(ProfilerActivity.CPU)
+            if not (use_kineto and ProfilerActivity.MPS in _supported_activities()):
+                raise AssertionError(
+                    "Legacy MPS profiling is not supported. Requires use_kineto=True on MPS devices."
+                )
+            self.kineto_activities.add(ProfilerActivity.MPS)
         elif self.use_device is not None and self.use_device != "privateuseone":
             if use_kineto:
                 # Native tracing mode: use KINETO_PRIVATEUSE1 with registered IActivityProfiler

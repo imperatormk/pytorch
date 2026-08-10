@@ -11,6 +11,10 @@
 #include <c10/util/Exception.h>
 #include <c10/util/env.h>
 
+#ifdef USE_MPS
+#include <ATen/mps/MPSKinetoProfiler.h>
+#endif
+
 namespace torch {
 
 namespace profiler::impl::kineto {
@@ -77,6 +81,14 @@ const ActivityTypeMap kPrivateUse1Types{
     // PRIVATEUSE1_RUNTIME appears in both kCpuTypes and kPrivateUse1Types.
     {libkineto::ActivityType::PRIVATEUSE1_RUNTIME,   "PRIVATEUSE1_RUNTIME"},
     {libkineto::ActivityType::PRIVATEUSE1_DRIVER,    "PRIVATEUSE1_DRIVER"},
+};
+
+const ActivityTypeMap kMpsTypes{
+    {libkineto::ActivityType::GPU_MEMCPY,            "GPU_MEMCPY"},
+    {libkineto::ActivityType::GPU_MEMSET,            "GPU_MEMSET"},
+    {libkineto::ActivityType::GPU_USER_ANNOTATION,   "GPU_USER_ANNOTATION"},
+    {libkineto::ActivityType::CONCURRENT_KERNEL,     "CONCURRENT_KERNEL"},
+    {libkineto::ActivityType::MPS_RUNTIME,           "MPS_RUNTIME"},
 };
 // clang-format on
 
@@ -299,6 +311,14 @@ void prepareTrace(
     const ActivityFilter& activity_filter) {
 #ifdef USE_KINETO
   libkineto::api().resetKinetoTLS();
+#ifdef USE_MPS
+  // Register before initProfilerIfRegistered(): that call is c10::call_once and
+  // drains the child-profiler factory queue exactly once, so a factory added
+  // afterwards would never be picked up.
+  if (activities.count(torch::autograd::profiler::ActivityType::MPS)) {
+    at::mps::registerMPSKinetoProfiler();
+  }
+#endif
   if (!libkineto::api().isProfilerRegistered()) {
     libkineto_init(/*cpuOnly=*/cpuOnly, /*logOnError=*/true);
     libkineto::api().suppressLogMessages();
@@ -399,10 +419,7 @@ void prepareTrace(
     insertActivities(torch::autograd::profiler::ActivityType::HPU, kHpuTypes);
   }
   if (activities.count(torch::autograd::profiler::ActivityType::MPS)) {
-    // MPS has no dedicated kineto device-trace backend; its kernels are
-    // captured on the CPU side, so requesting MPS profiling collects the same
-    // CPU op activities (the host-side dispatch of the Metal work).
-    insertActivities(torch::autograd::profiler::ActivityType::CPU, kCpuTypes);
+    insertActivities(torch::autograd::profiler::ActivityType::MPS, kMpsTypes);
   }
   if (activities.count(torch::autograd::profiler::ActivityType::CUDA)) {
     insertActivities(torch::autograd::profiler::ActivityType::CUDA, kCudaTypes);

@@ -164,6 +164,7 @@ class TORCH_API MPSStream {
   dispatch_queue_t _serialQueue = nullptr;
   // CommitAndContinue is enabled by default
   bool _enableCommitAndContinue = true;
+  bool _kinetoHandlerAttached = false;
   // >0 while a timed region (start..end event pair) is open; suppresses
   // involuntary command buffer commits so the pair stays on one buffer.
   int _timingPinned = 0;
@@ -177,6 +178,7 @@ class TORCH_API MPSStream {
   void commitAndWait();
   void commitAndContinue();
   void flush();
+  void addKinetoCompletedHandler();
 };
 
 /**

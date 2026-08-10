@@ -1693,6 +1693,9 @@ if(USE_KINETO)
   endif()
   list(APPEND Caffe2_DEPENDENCY_LIBS kineto)
   string(APPEND CMAKE_CXX_FLAGS " -DUSE_KINETO")
+  # Objective-C++ does not inherit CMAKE_CXX_FLAGS, so ATen's .mm sources would
+  # otherwise compile as if kineto were absent.
+  string(APPEND CMAKE_OBJCXX_FLAGS " -DUSE_KINETO")
   # Propagate the backend macro globally so PyTorch TUs outside torch_cpu's
   # link closure (e.g. torch_python) see it. torch_cpu links kineto PRIVATE,
   # so kineto's own PUBLIC HAS_* compile-def doesn't reach those TUs.

@@ -103,6 +103,7 @@ inline bool hasRequestedDeviceActivity(
       activities.contains(ActivityType::XPU) ||
       activities.contains(ActivityType::MTIA) ||
       activities.contains(ActivityType::HPU) ||
+      activities.contains(ActivityType::MPS) ||
       activities.contains(ActivityType::PrivateUse1);
 }
 

@@ -1,6 +1,7 @@
 //  Copyright © 2022 Apple Inc.
 
 #include <ATen/mps/MPSAllocatorInterface.h>
+#include <ATen/mps/MPSKinetoProfiler.h>
 #include <ATen/mps/MPSProfiler.h>
 #include <ATen/mps/MPSStream.h>
 #include <c10/metal/error.h>
@@ -54,9 +55,30 @@ MPSStream::~MPSStream() {
   assert(_commandBuffer == nil);
 }
 
+// Kineto needs the device timeline whether or not MPSProfiler is enabled, so
+// this is driven from the stream rather than from MPSProfiler's own (opt-in)
+// completion handler. commitAndContinue rolls the underlying MTLCommandBuffer
+// forward while keeping the same MPSCommandBuffer object, and a handler only
+// covers the segment that was live when it was added -- so it must be
+// re-attached before every commit, not once at creation.
+void MPSStream::addKinetoCompletedHandler() {
+  if (!_commandBuffer || _kinetoHandlerAttached) {
+    return;
+  }
+  _kinetoHandlerAttached = true;
+  [_commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    recordMPSKinetoActivity("mps_command_buffer",
+                            reinterpret_cast<uint64_t>(cb),
+                            cb.GPUStartTime,
+                            cb.GPUEndTime,
+                            /*isCopy=*/false);
+  }];
+}
+
 MPSCommandBuffer* MPSStream::commandBuffer() {
   if (!_commandBuffer) {
     _commandBuffer = [MPSCommandBuffer commandBufferFromCommandQueue:_commandQueue].retain;
+    addKinetoCompletedHandler();
   }
 
   return _commandBuffer;
@@ -69,6 +91,7 @@ id<MTLDevice> MPSStream::device() const {
 id<MTLComputeCommandEncoder> MPSStream::commandEncoder() {
   if (!_commandEncoder) {
     _commandEncoder = [commandBuffer() computeCommandEncoder].retain;
+    addKinetoCompletedHandler();
   }
 
   return _commandEncoder;
@@ -116,6 +139,7 @@ void MPSStream::synchronize(SyncType syncType) {
 void MPSStream::commit() {
   if (_enableCommitAndContinue) {
     [commandBuffer() commitAndContinue];
+    _kinetoHandlerAttached = false;
   } else {
     flush();
   }
@@ -141,6 +165,7 @@ void MPSStream::commitAndWait() {
     [_commandBuffer waitUntilCompleted];
     [_commandBuffer release];
     _commandBuffer = nil;
+    _kinetoHandlerAttached = false;
     checkLastError();
   }
 }
@@ -148,6 +173,7 @@ void MPSStream::commitAndWait() {
 void MPSStream::commitAndContinue() {
   assert(_commandBuffer);
   [_commandBuffer commitAndContinue];
+  _kinetoHandlerAttached = false;
 }
 
 void MPSStream::endKernelCoalescing() {
@@ -169,6 +195,7 @@ void MPSStream::flush() {
       [_commandBuffer release];
     }
     _commandBuffer = nil;
+    _kinetoHandlerAttached = false;
   }
 }
 

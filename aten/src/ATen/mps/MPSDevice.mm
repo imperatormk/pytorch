@@ -2,6 +2,7 @@
 
 #include <ATen/mps/MPSAllocatorInterface.h>
 #include <ATen/mps/MPSDevice.h>
+#include <ATen/mps/MPSKinetoProfiler.h>
 #include <ATen/mps/MPSStream.h>
 #include <ATen/native/mps/MPSGraphSequoiaOps.h>
 
@@ -50,6 +51,9 @@ MPSDevice::MPSDevice() : _mtl_device(nil) {
     break;
   }
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(_mtl_device);
+  if (_mtl_device) {
+    registerMPSKinetoProfiler();
+  }
 }
 
 bool MPSDevice::isMacOS13Plus(MacOSVersion version) const {
