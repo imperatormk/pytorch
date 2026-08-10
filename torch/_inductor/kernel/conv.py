@@ -914,17 +914,8 @@ def convolution(
         bias.freeze_layout()
         V.graph.sizevars.guard_int_seq(bias.get_size())
 
-    # On MPS the Triton conv templates frequently exceed the 32KB threadgroup
-    # budget and are rejected at compile time. Keep the aten fallback so the
-    # choice set is never all-OOR (which would raise NoValidChoicesError).
-    # TORCHINDUCTOR_MPS_FORCE_TRITON_CONV=1 drops it so the Triton conv kernel is
-    # always exercised.
-    keep_aten_fallback = device_type == "mps" and (
-        os.environ.get("TORCHINDUCTOR_MPS_FORCE_TRITON_CONV") != "1"
-    )
-
     choices = []
-    if torch._inductor.utils._use_conv_autotune_backend("ATEN") or keep_aten_fallback:
+    if torch._inductor.utils._use_conv_autotune_backend("ATEN"):
         choices = [
             aten_convolution.bind(
                 args,
@@ -1530,15 +1521,6 @@ def convolution_backward_lowering(
     # https://github.com/pytorch/pytorch/issues/187081.
     disable_triton_conv_bwd = device_type == "cuda" and not torch.version.hip
 
-    # On MPS the Triton conv templates frequently exceed the 32KB threadgroup
-    # budget and are rejected at compile time, leaving an all-OOR choice set.
-    # Keep the aten fallback alongside any Triton choices so autotuning can never
-    # end up with zero valid choices (NoValidChoicesError).
-    # TORCHINDUCTOR_MPS_FORCE_TRITON_CONV=1 drops it to always exercise Triton.
-    keep_aten_fallback = device_type == "mps" and (
-        os.environ.get("TORCHINDUCTOR_MPS_FORCE_TRITON_CONV") != "1"
-    )
-
     conv_configs = V.choices.get_conv_configs(device_type)
     dtype_size = input.get_dtype().itemsize
 
@@ -1806,7 +1788,6 @@ def convolution_backward_lowering(
         if (
             torch._inductor.utils._use_conv_bwd_weight_autotune_backend("ATEN")
             or not has_triton_dw_choices
-            or keep_aten_fallback
         ):
             choices_dw.append(
                 ext_kn_aten_dw.bind(
@@ -1841,7 +1822,6 @@ def convolution_backward_lowering(
         if (
             torch._inductor.utils._use_conv_bwd_input_autotune_backend("ATEN")
             or not has_triton_dx_choices
-            or keep_aten_fallback
         ):
             choices_dx.append(
                 ext_kn_aten_dx.bind(

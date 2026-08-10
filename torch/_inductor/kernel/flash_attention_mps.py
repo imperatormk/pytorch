@@ -12,7 +12,6 @@ import sympy
 
 import torch
 
-from .. import config
 from ..ir import FixedLayout, FlexibleLayout
 from ..lowering import register_lowering
 from ..select_algorithm import (
@@ -249,14 +248,12 @@ def scaled_dot_product_attention_math_for_mps(
     )
 
     # The aten kernel competes rather than only serving as a fallback for
-    # shapes the template rejects. Without it the autotuner sees Triton
-    # templates only, so an ATEN arm silently still runs Triton and the eager
-    # kernel is never timed against ours -- and the tiled template is not
-    # uniformly better: at S=1024 head_dim=80 it measures 0.797x of the
-    # decomposition, so which one wins is a per-shape question that the
-    # autotuner is already built to answer.
+    # shapes the template rejects: the tiled template is not uniformly better
+    # (at S=1024 head_dim=80 it measures 0.797x of the decomposition), so which
+    # one wins is a per-shape question the autotuner is built to answer. It
+    # still honours the ATEN backend list, so a Triton-only arm stays pure.
     choices = []
-    if _use_autotune_backend("ATEN") or config.max_autotune or config.max_autotune_gemm:
+    if _use_autotune_backend("ATEN"):
         choices.append(
             aten_sdpa_mps.bind(
                 (query, key, value, attn_mask),
@@ -413,7 +410,7 @@ def scaled_dot_product_attention_flash_mps_backward(
     # The ATen kernel competes rather than only serving as a fallback, so which
     # implementation runs is a per-shape autotune decision instead of one this
     # code makes.
-    if _use_autotune_backend("ATEN") or config.max_autotune or config.max_autotune_gemm:
+    if _use_autotune_backend("ATEN"):
         choices.append(
             aten_sdpa_mps_bwd.bind(
                 (query, key, value, grad_out, output, logsumexp, delta,
