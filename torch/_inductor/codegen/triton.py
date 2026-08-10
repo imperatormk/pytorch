@@ -1402,6 +1402,16 @@ class TritonOverrides(OpOverrides):
         ):
             return f"{x}.to(tl.float32).to({out_dtype})"
 
+        # An explicit narrowing to [b]float16 has to round even though compute
+        # stays in fp32, so go through the narrow type instead of letting
+        # triton_compute_type widen the cast away.
+        if (
+            src_dtype is not None
+            and dtype in (torch.float16, torch.bfloat16)
+            and out_dtype != triton_type(dtype)
+        ):
+            return f"{x}.to({triton_type(dtype)}).to({out_dtype})"
+
         return f"{x}.to({out_dtype})"
 
     @staticmethod
