@@ -11,7 +11,7 @@ from ...kernel.mm import (
     mm_contiguous_subgraph_template,
 )
 from ...kernel_inputs import KernelInputs, MMKernelInputs
-from ...utils import use_contiguous, use_contiguous_mps
+from ...utils import use_contiguous
 from .base import TemplateConfigHeuristics
 from .gemm import GemmMaxAutotuneTemplateConfigHeuristics
 
@@ -66,21 +66,6 @@ class ContiguousMMHeuristics(GemmMaxAutotuneTemplateConfigHeuristics):
             # no need for contiguous decomposition
             return
         m, n, k = kernel_inputs.mnk_symbolic()
-        if not self._admits(m, n, k):
+        if not use_contiguous(m, n, k):
             return
         yield {}
-
-    def _admits(self, m: Any, n: Any, k: Any) -> bool:
-        return use_contiguous(m, n, k)
-
-
-@register_template_heuristic(mm_contiguous_subgraph_template.uid, "mps", op_name="mm")
-@register_template_heuristic(
-    addmm_contiguous_subgraph_template.uid, "mps", op_name="addmm"
-)
-class ContiguousMMHeuristicsMPS(ContiguousMMHeuristics):
-    """Offer the contiguous-mat2 transform for MPS, gated on mat2's footprint
-    rather than on k/m ratios (see use_contiguous_mps)."""
-
-    def _admits(self, m: Any, n: Any, k: Any) -> bool:
-        return use_contiguous_mps(m, n, k)

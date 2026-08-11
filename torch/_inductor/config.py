@@ -2805,15 +2805,6 @@ mps_backend: Literal["metal", "triton"] = os.environ.get(  # type: ignore[assign
     "TORCHINDUCTOR_MPS_BACKEND", "triton"
 )
 
-# Size of a non-contiguous mat2 at or above which an MPS matmul offers a
-# contiguous copy of it as an autotune choice. A transposed mat2 is gathered as
-# k rows n*4 bytes apart, which is cheap while it fits cache and ruinous once it
-# does not: on an M4 the copy is worth 1.39-1.43x past 90MB, breaks even from
-# ~10MB (9.4MB measures 0.4% behind aten, against 4% for the gather), and only
-# loses on small mat2. 0 offers it for every non-contiguous mat2 and lets the
-# autotuner arbitrate, which costs one extra choice per matmul.
-mps_contiguous_threshold_bytes = 0
-
 # Backend to use for XPU codegen either "triton"
 xpu_backend: Literal["triton"] = "triton"
 

@@ -2465,34 +2465,6 @@ def use_contiguous(m: _IntLike, n: _IntLike, k: _IntLike) -> bool:
 
 
 @functools.cache
-def use_contiguous_mps(m: _IntLike, n: _IntLike, k: _IntLike) -> bool:
-    """
-    Check if we should make the second matrix contiguous before an MPS matmul.
-
-    A transposed B is read as K rows N*4 bytes apart, so one tile is BLOCK_K
-    disjoint cache lines. That is cheap while B still fits cache and ruinous
-    once it does not: measured against aten on an M4, dY @ W^T runs 1.24x
-    FASTER than aten at K=768 (B 2.4MB) but 0.74x at K=30522 (B 93.8MB), with
-    buffer residency collapsing 71% -> 18% and the MMU limiter rising 7% ->
-    26%. Copying B costs one streaming pass and wins back far more: 91.5 ->
-    65.7 ms at the DistilBert LM-head backward shape, 0.74x -> 1.03x vs aten.
-
-    Gate on mat2's footprint, not on the k/m and k/n ratios rocm uses: the
-    crossover tracked bytes and was flat in n. The default threshold is 0, i.e.
-    always offer it and let the autotuner arbitrate.
-    """
-    from torch._inductor.virtualized import V
-
-    if V.graph.aot_mode or V.graph.cpp_wrapper:
-        return False
-    if not all(isinstance(d, (int, sympy.Integer)) for d in (m, n, k)):
-        return False
-    return V.graph.sizevars.statically_known_true(
-        sympy.Ge(n * k * 4, config.mps_contiguous_threshold_bytes)
-    )
-
-
-@functools.cache
 def get_k_splits(m: _IntLike, n: _IntLike, k: _IntLike) -> list[int]:
     # To limit compile time
     k_splits_limit = config.triton.num_decompose_k_splits
