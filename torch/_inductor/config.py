@@ -2805,6 +2805,13 @@ mps_backend: Literal["metal", "triton"] = os.environ.get(  # type: ignore[assign
     "TORCHINDUCTOR_MPS_BACKEND", "triton"
 )
 
+# Whether an MPS matmul with a K-major mat2 also offers a choice that makes it
+# contiguous first. Set to 0 to withhold that choice, leaving the direct gather.
+mps_densify_mat2: bool = Config(
+    env_name_force="TORCHINDUCTOR_MPS_DENSIFY_MAT2",
+    default=True,
+)
+
 # Backend to use for XPU codegen either "triton"
 xpu_backend: Literal["triton"] = "triton"
 

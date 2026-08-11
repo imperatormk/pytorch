@@ -300,13 +300,24 @@ class ContiguousTemplate(SubgraphTemplate):
                 decompositions,
             )
 
-            return super().generate(
+            choice = super().generate(
                 name=self.name,
                 input_nodes=input_nodes,
                 layout=layout,
                 make_fx_graph=fn,
                 description=self.description,
             )
+
+        if layout.device.type == "mps":
+            # Subgraphs benchmark with autotuning off and ATEN only, which would
+            # compare a Triton gather against an aten mm rather than against the
+            # same backend on a contiguous operand.
+            choice.config_patches = {
+                "max_autotune": True,
+                "max_autotune_gemm": True,
+                "max_autotune_gemm_backends": inductor_config.max_autotune_gemm_backends,
+            }
+        return choice
 
 
 def contiguous_mm(a, b):
