@@ -46,6 +46,10 @@ from torch.testing._internal.common_utils import IS_CI, IS_WINDOWS
 from torch.testing._internal.inductor_utils import HAS_MPS
 from torch.utils._triton import has_triton_tma_device
 
+# The MPS gold path (CPU + fp64) needs the same relocation helpers the
+# flex_attention suite already grew for it; import rather than duplicate.
+from .test_flex_attention import _is_mps_device, _relocate_captures
+
 
 if IS_WINDOWS and IS_CI:
     # TODO(xuhancn) : Need track if it is a requirement on windows.
@@ -420,6 +424,14 @@ class TestFlexDecoding(InductorTestCase):
         compiled_out: torch.Tensor,
     ):
         dtype = ref_out.dtype
+        if (
+            golden_out.device != ref_out.device
+            or golden_out.device != compiled_out.device
+        ):
+            # The MPS gold path runs on CPU (no fp64 on MPS); compare on CPU.
+            golden_out = golden_out.cpu()
+            ref_out = ref_out.cpu()
+            compiled_out = compiled_out.cpu()
         with torch.no_grad():
             # Note, it seems like we really are less accurate than the float32
             # computation, likely due to the online softmax
@@ -483,9 +495,22 @@ class TestFlexDecoding(InductorTestCase):
             enable_gqa=(Q_H != KV_H),
             kernel_options=kernel_options,
         )
+        if _is_mps_device(device):
+            # q/k/v_gold live on CPU (fp64), so the mask and any tensor the
+            # score_mod captured have to follow them off the device.
+            sdpa_partial_gold = create_attention(
+                _relocate_captures(score_mod, "cpu"),
+                block_mask.to("cpu") if block_mask is not None else None,
+                enable_gqa=(Q_H != KV_H),
+                kernel_options=kernel_options,
+            )
+        else:
+            sdpa_partial_gold = sdpa_partial
         compiled_sdpa = torch.compile(sdpa_partial)
         if not self.test_inference_only:
-            golden_out, gold_lse = sdpa_partial(q_gold, k_gold, v_gold, return_lse=True)
+            golden_out, gold_lse = sdpa_partial_gold(
+                q_gold, k_gold, v_gold, return_lse=True
+            )
             ref_out, ref_lse = sdpa_partial(q_ref, k_ref, v_ref, return_lse=True)
             compiled_out, compiled_lse = compiled_sdpa(q, k, v, return_lse=True)
             self._check_out(
@@ -494,7 +519,7 @@ class TestFlexDecoding(InductorTestCase):
                 compiled_lse,
             )
         else:
-            golden_out = sdpa_partial(q_gold, k_gold, v_gold, return_lse=False)
+            golden_out = sdpa_partial_gold(q_gold, k_gold, v_gold, return_lse=False)
             ref_out = sdpa_partial(q_ref, k_ref, v_ref, return_lse=False)
             compiled_out = compiled_sdpa(q, k, v, return_lse=False)
         self._check_out(
@@ -741,7 +766,17 @@ class TestFlexDecoding(InductorTestCase):
             block_mask = create_block_mask(noop_mask, Q_B, 1, 1, KV_S, device=device)
 
         sdpa_partial = create_attention(score_mod, block_mask, enable_gqa=(Q_H != KV_H))
-        golden_out, gold_lse = sdpa_partial(q_gold, k_gold, v_gold, return_lse=True)
+        if _is_mps_device(device):
+            sdpa_partial_gold = create_attention(
+                _relocate_captures(score_mod, "cpu"),
+                block_mask.to("cpu"),
+                enable_gqa=(Q_H != KV_H),
+            )
+        else:
+            sdpa_partial_gold = sdpa_partial
+        golden_out, gold_lse = sdpa_partial_gold(
+            q_gold, k_gold, v_gold, return_lse=True
+        )
         ref_out, ref_lse = sdpa_partial(q_ref, k_ref, v_ref, return_lse=True)
 
         compiled_out, compiled_lse = self.run_paged_attention(

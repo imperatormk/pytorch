@@ -191,41 +191,6 @@ def skip_on_xpu(test_func):
 skip_on_mps = skipMPSIf(True, "Not supported on MPS")
 
 
-def _is_not_implemented_exc(exc):
-    """True if `exc` is or wraps a NotImplementedError (Dynamo/Inductor wrap it)."""
-    seen = set()
-    while exc is not None and id(exc) not in seen:
-        seen.add(id(exc))
-        if (
-            isinstance(exc, NotImplementedError)
-            or "NotImplemented" in type(exc).__name__
-            or "NotImplementedError:" in str(exc)
-        ):
-            return True
-        exc = getattr(exc, "inner_exception", None) or exc.__cause__ or exc.__context__
-    return False
-
-
-def expected_not_implemented_on_mps(test_func):
-    """On MPS the test must raise NotImplementedError (possibly wrapped by
-    Inductor/Dynamo); other exceptions or silent success fail the test."""
-
-    @functools.wraps(test_func)
-    def wrapper(self, *args, **kwargs):
-        device = kwargs.get("device", args[0] if args else None)
-        if not _is_mps_device(device):
-            return test_func(self, *args, **kwargs)
-        try:
-            test_func(self, *args, **kwargs)
-        except Exception as exc:
-            if _is_not_implemented_exc(exc):
-                return
-            raise
-        self.fail("expected NotImplementedError on MPS but test passed")
-
-    return wrapper
-
-
 def rmse(ref, res):
     """
     Calculate root mean squared error
@@ -2070,7 +2035,6 @@ class TestFlexAttention(InductorTestCase):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_bf16_score_mod_captured_grad_dtype(self, device):
         """
         Tests with tensors that require gradients with bf16 dtype in the score_mod
@@ -2176,7 +2140,6 @@ class TestFlexAttention(InductorTestCase):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_load_from_view_buffer(self, device):
         dtype = torch.float16
         W = 8
@@ -2457,7 +2420,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @dtypes(torch.float16)
     @dtypesIfCUDA(torch.float16)
     @common_utils.parametrize("detach_temp", [False, True])
-    @expected_not_implemented_on_mps
     def test_captured_0d_scalar_grad(self, device, dtype, detach_temp):
         class M(nn.Module):
             def __init__(self):
@@ -2550,7 +2512,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @skip_on_cpu
     @dtypes(torch.float16)
     @dtypesIfCUDA(torch.float16)
-    @expected_not_implemented_on_mps
     def test_dynamic_captured_buffer(self, device, dtype):
         def run_with_head_count(compiled_fa, head_count):
             head_scale = torch.randn(
@@ -2583,7 +2544,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @skip_on_cpu
     @dtypes(torch.bfloat16)
     @dtypesIfCUDA(torch.bfloat16)
-    @expected_not_implemented_on_mps  # uses requires_grad+autograd.grad; backward NIE on MPS
     def test_compacted_block_mask_matches_reference_after_recompile(
         self, device, dtype
     ):
@@ -2789,7 +2749,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
         "score_mod", test_score_mods, name_fn=lambda score_mod: score_mod.__name__
     )
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_return_aux(self, device, dtype, score_mod):
         """Test the new return_aux API with AuxRequest/Output"""
         make_tensor = functools.partial(
@@ -2930,7 +2889,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @dtypes(*device_configs["cpu"].dtypes)
     @dtypesIfCUDA(*device_configs["cuda"].dtypes)
     @dtypesIfXPU(*device_configs["xpu"].dtypes)
-    @expected_not_implemented_on_mps
     def test_autocast(self, device, dtype):
         """Test torch autocast functionality"""
         q = torch.randn(1, 1, 1024, 64, device=device, dtype=dtype).to(torch.float16)
@@ -3108,7 +3066,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_multiple_mask_calls(self, device):
         make_tensor = functools.partial(
             torch.randn,
@@ -3370,7 +3327,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_inputs_are_realized(self, device):
         def f(q, k, v):
             x = torch.randn(1024, device=device)
@@ -3526,7 +3482,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
         self.assertEqual(out.dtype, query.dtype)
 
     @supported_platform
-    @expected_not_implemented_on_mps
     def test_mixed_dtypes_compiled(self, device):
         # MPS doesn't support fp8 dtype conversion; force the fp16/fp32 mix on MPS.
         use_fp8 = PLATFORM_SUPPORTS_FP8 and not _is_mps_device(device)
@@ -3729,7 +3684,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_autograd_function_in_score_mod(self, device):
         class ApplyMask(torch.autograd.Function):
             generate_vmap_rule = True
@@ -3880,7 +3834,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @dtypesIfCUDA(*device_configs["cuda"].dtypes)
     @dtypesIfXPU(*device_configs["xpu"].dtypes)
     @common_utils.parametrize("score_mod", [_identity, _causal])
-    @expected_not_implemented_on_mps  # backward path (return_lse / requires_grad); NIE on MPS
     def test_logsumexp_correctness(self, device, dtype, score_mod):
         make_tensor = functools.partial(
             torch.randn,
@@ -3922,7 +3875,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_logsumexp_only_return(self, device):
         make_tensor = functools.partial(
             torch.randn,
@@ -3950,7 +3902,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @common_utils.parametrize(
         "score_mod", [_identity, _causal, _times_two, _squared, _trig, _trig2]
     )
-    @expected_not_implemented_on_mps  # backward path; NIE on MPS via _validate_device
     def test_aot_eager_gradcheck(self, device, score_mod):
         # MPS lacks fp64; on MPS we just need _validate_device to raise NIE,
         # so use fp32 — the call never gets far enough for precision to matter.
@@ -3974,7 +3925,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_eager_backward_strides(self, device):
         class Repro(torch.nn.Module):
             def __init__(self):
@@ -4004,7 +3954,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # backward path; NIE on MPS via _validate_device
     def test_differentiable_logsumexp_gradcheck(self, device):
         # See test_aot_eager_gradcheck for the per-device dtype rationale.
         dtype = torch.float32 if _is_mps_device(device) else torch.float64
@@ -4028,7 +3977,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_differentiable_logsumexp_compiled(self, device):
         make_tensor = functools.partial(
             torch.randn,
@@ -4066,7 +4014,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_score_mod_without_score_gradient_errors(self, device):
         def score_mod(score, b, h, q_idx, kv_idx):
             return q_idx >= kv_idx
@@ -4150,7 +4097,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_float32_matmul_precision(self, device):
         make_tensor = functools.partial(
             torch.zeros,
@@ -4185,7 +4131,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @skip_on_cpu
     @common_utils.parametrize("score_mod_name", ["_head_offset"])
     @common_utils.parametrize("mode", ["eager", "aot_eager"])
-    @expected_not_implemented_on_mps  # backward path; NIE on MPS via _validate_device
     def test_captured_score_mod_aot_eager_gradcheck(
         self, device, score_mod_name: str, mode: str
     ):
@@ -4240,7 +4185,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_strided_backwards(self, device):
         shape = (1, 2, 4096, 64)
         Q = torch.randn(shape, requires_grad=True, device=device)
@@ -4348,7 +4292,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
         ],
     )
     @common_utils.parametrize("shape", [(2, 5, 128, 16), (4, 2, 64, 16)])
-    @expected_not_implemented_on_mps  # backward path; NIE on MPS via _validate_device
     def test_flex_attention_backward_stride_ordering(
         self, device, mode, permute_order, shape
     ):
@@ -5247,7 +5190,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @supported_platform
     @skip_on_cpu
     @common_utils.parametrize("backend", ["flex_attention", "flex_decode", "eager"])
-    @expected_not_implemented_on_mps
     def test_lse_masked_output(self, device, backend):
         if backend == "flex_decode":
             kernel_options = {"FORCE_USE_FLEX_ATTENTION": False}
@@ -5395,7 +5337,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # logspace out not implemented
     def test_reduction_unrolled(self, device):
         # We can't lower a 256-element reduction inside a pointwise reduction
         means = torch.randn(S, 3, device=device)
@@ -5483,7 +5424,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # no backward
     def test_small_q_kv_len(self, device):
         make_tensor = functools.partial(
             torch.ones,
@@ -5515,7 +5455,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # no backward
     def test_dynamic_shapes_bug_dynamic_batch(self, device):
         def _flex_attention_mask(b, h, q_idx, kv_idx, input_lengths):
             padding_condition = (q_idx < input_lengths[b]) & (kv_idx < input_lengths[b])
@@ -5713,7 +5652,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
             "triton.native_matmul": False,
         }
     )
-    @expected_not_implemented_on_mps  # no backward yet
     def test_free_symbol_dynamic(self, device):
         def batch_flip_causal(b, h, q_idx, kv_idx):
             return (q_idx >= kv_idx) & (b % 2 == 0)
@@ -5767,7 +5705,6 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_symbol_closure_in_score_mod(self, device):
         class SimpleAttention(torch.nn.Module):
             def __init__(self, dim=512, n_head=8):
@@ -5811,7 +5748,6 @@ def forward(self, child : torch.Tensor, child_1 : torch.Tensor, child_2 : torch.
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # backward path; NIE on MPS via _validate_device
     def test_fw_bw_graph_correctness(self, device):
         cnt = CompileCounterWithBackend("aot_eager")
         # MPS lacks fp64; the NIE fires before any assertion would care.
@@ -5922,7 +5858,6 @@ class GraphModule(torch.nn.Module):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # backward path; NIE on MPS via _validate_device
     def test_direct_backward_preserves_explicit_buffers(self, device):
         mask_buffer = torch.full((), 128, device=device, dtype=torch.int32)
 
@@ -6112,7 +6047,6 @@ class GraphModule(torch.nn.Module):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # backward Triton lowering
     def test_direct_backward_inductor_batch_broadcast_matches_eager(self, device):
         def score_mod(score, b, h, m, n):
             return score
@@ -6203,7 +6137,6 @@ class GraphModule(torch.nn.Module):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # backward Triton lowering
     def test_direct_backward_inductor_supports_scalar_mask_mod_buffers(self, device):
         def score_mod(score, b, h, m, n):
             return score
@@ -6642,7 +6575,6 @@ class GraphModule(torch.nn.Module):
             [torch.ops.aten.mm.default, flex_attention_hop],
         ],
     )
-    @expected_not_implemented_on_mps  # no backward yet
     def test_selective_ac(self, device, ops_to_save):
         class FlexAttentionModule(nn.Module):
             def __init__(self, hidden_size, num_heads):
@@ -6995,7 +6927,6 @@ class GraphModule(torch.nn.Module):
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # no backward yet
     def test_large_batch_heads_grid_dimension(self, device):
         B, H, S, D = 22720, 3, 64, 32
 
@@ -7903,7 +7834,6 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
             )
 
     @supported_platform
-    @expected_not_implemented_on_mps  # no captured buffers yet
     def test_doc_mask_clamped_repro(self, device):
         def _offsets_to_doc_ids_tensor(offsets):
             device = offsets.device
@@ -8030,7 +7960,6 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
 
     @common_utils.parametrize("compile", [False, True])
     @supported_platform
-    @expected_not_implemented_on_mps  # no backward yet
     def test_block_mask_vs_sequence_lengths(self, device, compile):
         if compile:
             flex_attention_call = torch.compile(flex_attention)
@@ -8190,7 +8119,6 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # no backwards yet
     def test_flex_attention_poisoned_rel_logits(self, device):
         B = 1
         H = 1
@@ -8227,7 +8155,6 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps  # no backwards yet
     def test_flex_attention_poison_mod_fwd(self, device):
         """Div by score should cause our edge case handiling to NaN"""
         B = 1
@@ -8261,7 +8188,6 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
 
     @supported_platform
     @skip_on_cpu
-    @expected_not_implemented_on_mps
     def test_flex_attention_poison_mod_bwd(self, device):
         """log score should cause our edge case handiling for NaN in grad score"""
         B = 1
