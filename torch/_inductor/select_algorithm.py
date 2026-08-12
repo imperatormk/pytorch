@@ -192,8 +192,18 @@ class AutotuneArgs:
         self.extern would compare a buffer the choice under test never wrote --
         and since out and out_extern alias one storage, a triton choice
         overwrites the reference before it is read, so correct kernels fail.
+
+        equal_nan: benchmark inputs come from rand_strided, which fills every
+        input independently -- including ones the op derives and constrains, like
+        flex attention's LSE (a log-sum-exp of the scores) and DELTA. Random
+        values there make exp2(scores - LSE) overflow, and inf - inf is NaN, so
+        NaN is the CORRECT output for those inputs and every choice produces it
+        at the same positions. Without equal_nan, NaN != NaN failed each such
+        choice as "incorrect" even though the tensors were bit-identical. A
+        choice that puts NaN where the reference has a number still fails.
         """
         got = self.get_benchmark_tensors(extern).output_tensor
+        kwargs.setdefault("equal_nan", True)
         torch.testing.assert_close(got, self.expected, **kwargs)
 
 
