@@ -8396,12 +8396,14 @@ def addcmul(self, tensor1, tensor2, *, value=1):
     t1_loader = tensor1.make_loader()
     t2_loader = tensor2.make_loader()
 
-    # FMA/mul_rn/div_rn are only available for floating-point types on CUDA (non-AMD)
+    # FMA/mul_rn are floating-point only. ops.fma and ops.mul_rn have no Triton
+    # override, so both lower to the generic forms in OpOverrides on any Triton
+    # backend, MPS included.
     device = self.get_device()
     use_fma = (
         dtype.is_floating_point
         and device is not None
-        and device.type in ["cuda", "xpu"]
+        and device.type in ["cuda", "xpu", "mps"]
     )
 
     def inner_fn(idx):
@@ -8470,13 +8472,15 @@ def addcdiv(self, tensor1, tensor2, *, value=1):
     t1_loader = tensor1.make_loader()
     t2_loader = tensor2.make_loader()
 
-    # FMA/mul_rn/div_rn are only available for floating-point types on CUDA (non-AMD)
+    # FMA/div_rn are floating-point only. div_rn is the one op here with a real
+    # Triton override, and it emits triton.language.div_rn, which lowers through
+    # create_precise_divf rather than libdevice -- exact on the Apple backend.
     device = self.get_device()
     use_fma = (
         dtype.is_floating_point
         and not torch.version.hip
         and device is not None
-        and device.type in ["cuda", "xpu"]
+        and device.type in ["cuda", "xpu", "mps"]
     )
 
     def inner_fn(idx):
