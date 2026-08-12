@@ -5186,7 +5186,14 @@ class AlgorithmSelectorCache(PersistentCache):
             if device_interface.is_available():
                 device_interface.synchronize()  # shake out any CUDA errors
 
-            if VERIFY and autotune_args.expected is not None:
+            if (
+                VERIFY
+                and autotune_args.expected is not None
+                and not isinstance(choice, SubgraphChoiceCaller)
+            ):
+                # A subgraph choice returns its result rather than writing `out`,
+                # so `out` still holds the zeros written above and comparing it
+                # reports every element wrong.
                 autotune_args.verify(extern=is_extern, **VERIFY)
             return result
         finally:
