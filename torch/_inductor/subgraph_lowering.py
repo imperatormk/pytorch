@@ -15,7 +15,7 @@ from torch.utils._ordered_set import OrderedSet
 
 from . import ir
 from .exc import SubgraphLoweringException
-from .graph import GraphLowering
+from .graph import getattr_recursive, GraphLowering
 from .ops_handler import OpsHandler, SimpleCSEHandler
 from .virtualized import ops, V, WrapperHandler
 
@@ -127,6 +127,20 @@ class PointwiseSubgraphLowering(torch.fx.Interpreter):
                     f"{target} not supported in subgraph, (missing lowering)"
                 )
             return lowerings[target](*args, **kwargs)
+
+    def get_attr(  # type: ignore[override]
+        self, target: str, args: tuple[Any], kwargs: dict[str, Any]
+    ) -> Any:
+        # fx.Interpreter's default returns the raw attribute, so a constant
+        # lifted into the subgraph (e.g. a score_mod closing over a tensor and
+        # indexing it) reaches the lowerings as a torch.Tensor rather than an
+        # IR node, and the first lowering to ask it for get_dtype()/get_size()
+        # raises AttributeError. Register it on the root graph, which owns the
+        # constant table, and hand back the TensorBox it returns.
+        value = getattr_recursive(self.module, target)  # type: ignore[arg-type]
+        if isinstance(value, torch.Tensor):
+            return self.root_graph.add_tensor_constant(value, target)
+        return value
 
     def output(self, target: str, args: tuple[Any], kwargs: dict[str, Any]) -> None:  # type: ignore[override]
         if len(args) != 1:
