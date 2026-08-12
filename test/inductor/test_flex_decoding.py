@@ -43,6 +43,7 @@ from torch.testing._internal.common_device_type import (
 )
 from torch.testing._internal.common_quantized import _snr
 from torch.testing._internal.common_utils import IS_CI, IS_WINDOWS
+from torch.testing._internal.inductor_utils import HAS_MPS
 from torch.utils._triton import has_triton_tma_device
 
 
@@ -102,6 +103,10 @@ device_configs = {
         ),
         dtypes_fast=[torch.float32],
     ),
+    "mps": DeviceConfig(
+        dtypes=[torch.float32, torch.float16, torch.bfloat16],
+        dtypes_fast=[torch.float32],
+    ),
 }
 
 test_device = ("cpu",)
@@ -110,6 +115,8 @@ if TEST_ON_CUDA:
 elif TEST_ON_XPU:
     torch._C._set_onednn_allow_tf32(True)
     test_device = ("xpu",)
+elif HAS_MPS:
+    test_device = ("mps",)
 
 torch_config_string = torch.__config__.show()
 LONG_COMPILATION_ON_CPU = False
@@ -336,9 +343,19 @@ def query_key_value_clones(
     """Clones the query, key, and value tensors and moves them to the specified dtype."""
     if dtype is None:
         dtype = query.dtype
-    query_ref = query.detach().clone().to(dtype).requires_grad_(query.requires_grad)
-    key_ref = key.detach().clone().to(dtype).requires_grad_(key.requires_grad)
-    value_ref = value.detach().clone().to(dtype).requires_grad_(value.requires_grad)
+    if dtype == torch.float64 and query.device.type == "mps":
+        # MPS lacks fp64, run the high-precision reference on CPU
+        query_ref = (
+            query.detach().cpu().clone().to(dtype).requires_grad_(query.requires_grad)
+        )
+        key_ref = key.detach().cpu().clone().to(dtype).requires_grad_(key.requires_grad)
+        value_ref = (
+            value.detach().cpu().clone().to(dtype).requires_grad_(value.requires_grad)
+        )
+    else:
+        query_ref = query.detach().clone().to(dtype).requires_grad_(query.requires_grad)
+        key_ref = key.detach().clone().to(dtype).requires_grad_(key.requires_grad)
+        value_ref = value.detach().clone().to(dtype).requires_grad_(value.requires_grad)
     return query_ref, key_ref, value_ref
 
 
@@ -360,6 +377,11 @@ class TestFlexDecoding(InductorTestCase):
                 self.skipTest(
                     "skip UT for CPU due to long compilation time found in CI"
                 )
+            self.test_inference_only = True
+        elif self.device_type == "mps":
+            # Decoding is an inference kernel, and the fp64 golden reference has
+            # to run on CPU because MPS has no fp64 -- where flex backward is
+            # unsupported. Both point the same way: compare forward only.
             self.test_inference_only = True
 
     def _check_equal(
@@ -2406,7 +2428,7 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
 
 instantiate_device_type_tests(
-    TestFlexDecoding, globals(), only_for=test_device, allow_xpu=True
+    TestFlexDecoding, globals(), only_for=test_device, allow_xpu=True, allow_mps=True
 )
 
 if __name__ == "__main__":
