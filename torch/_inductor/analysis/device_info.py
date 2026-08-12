@@ -246,6 +246,43 @@ _device_mapping: dict[str, DeviceInfo] = {
         dram_bw_gbs=1228.8,
         dram_gb=48,
     ),
+    # Apple silicon. Keys match `torch.mps.get_device_name()`.
+    #
+    # Apple publishes no throughput figures for M-series GPUs, so unlike every
+    # entry above these TFLOPS are third-party calculations from core count and
+    # clock, not vendor specifications. Bandwidth is Apple-published. Only
+    # float32 is listed: with no published FP16/INT8 numbers, a derived entry
+    # would be a guess, and `datasheet_tops` already returns None for a dtype
+    # it does not find.
+    #
+    # `dram_gb` is the maximum configurable unified memory for the part, which
+    # is shared with the CPU rather than dedicated to the GPU.
+    "APPLE M1": DeviceInfo(tops={torch.float32: 2.61}, dram_bw_gbs=68.25, dram_gb=16),
+    "APPLE M1 PRO": DeviceInfo(tops={torch.float32: 5.3}, dram_bw_gbs=200, dram_gb=32),
+    "APPLE M1 MAX": DeviceInfo(tops={torch.float32: 10.4}, dram_bw_gbs=400, dram_gb=64),
+    "APPLE M1 ULTRA": DeviceInfo(
+        tops={torch.float32: 21.2}, dram_bw_gbs=800, dram_gb=128
+    ),
+    "APPLE M2": DeviceInfo(tops={torch.float32: 3.57}, dram_bw_gbs=100, dram_gb=24),
+    "APPLE M2 PRO": DeviceInfo(tops={torch.float32: 6.8}, dram_bw_gbs=200, dram_gb=32),
+    "APPLE M2 MAX": DeviceInfo(tops={torch.float32: 13.6}, dram_bw_gbs=400, dram_gb=96),
+    "APPLE M2 ULTRA": DeviceInfo(
+        tops={torch.float32: 27.2}, dram_bw_gbs=800, dram_gb=192
+    ),
+    "APPLE M3": DeviceInfo(tops={torch.float32: 3.53}, dram_bw_gbs=100, dram_gb=24),
+    "APPLE M3 PRO": DeviceInfo(tops={torch.float32: 7.4}, dram_bw_gbs=150, dram_gb=36),
+    "APPLE M3 MAX": DeviceInfo(tops={torch.float32: 16.4}, dram_bw_gbs=400, dram_gb=128),
+    "APPLE M3 ULTRA": DeviceInfo(
+        tops={torch.float32: 32.8}, dram_bw_gbs=800, dram_gb=512
+    ),
+    "APPLE M4": DeviceInfo(tops={torch.float32: 4.26}, dram_bw_gbs=120, dram_gb=32),
+    "APPLE M4 PRO": DeviceInfo(tops={torch.float32: 9.22}, dram_bw_gbs=273, dram_gb=64),
+    # The M4 Max ships in 32- and 40-core variants (410 and 546 GB/s) that share
+    # one device name, so the lower figure is used rather than over-promising
+    # bandwidth on the smaller part.
+    "APPLE M4 MAX": DeviceInfo(
+        tops={torch.float32: 18.43}, dram_bw_gbs=410, dram_gb=128
+    ),
 }
 _device_mapping["AMD INSTINCT MI350X"] = _device_mapping["AMD MI350X"]
 _device_mapping["AMD INSTINCT MI300X"] = _device_mapping["AMD MI300X"]
@@ -291,6 +328,8 @@ def datasheet_tops(
         name = torch.cuda.get_device_name()
     elif torch.xpu.is_available():
         name = torch.xpu.get_device_name()
+    elif torch.backends.mps.is_available():
+        name = torch._C._mps_get_name()
     else:
         log.info("No supported device available, skipping datasheet lookup")
         return None
@@ -330,6 +369,8 @@ def datasheet_dram_bw_gbs(device_name: str | None = None) -> float | None:
             device_name = torch.cuda.get_device_name()
         elif torch.xpu.is_available():
             device_name = torch.xpu.get_device_name()
+        elif torch.backends.mps.is_available():
+            device_name = torch._C._mps_get_name()
         else:
             log.info("No supported device available, skipping datasheet lookup")
             return None
