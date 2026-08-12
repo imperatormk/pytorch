@@ -1909,7 +1909,7 @@ def unfuse_bias_add_to_pointwise(match: Match, mat1, mat2, *, inp, alpha, beta):
         ):
             return
 
-    drop_input_for_beta_zero = inp.meta["val"].device.type == "cuda"
+    drop_input_for_beta_zero = inp.meta["val"].device.type in ("cuda", "mps")
 
     def repl(inp, x1, x2, alpha, beta):
         if alpha == 0 and beta == 0 and drop_input_for_beta_zero:
