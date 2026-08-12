@@ -830,11 +830,21 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
         self.depthwise_conv2d_bwd_weight_configs: list[
             DepthwiseConv2dBwdWeightConfig
         ] = [
-            DepthwiseConv2dBwdWeightConfig(block_c=1, block_r=128, num_stages=2, num_warps=4),
-            DepthwiseConv2dBwdWeightConfig(block_c=1, block_r=256, num_stages=2, num_warps=4),
-            DepthwiseConv2dBwdWeightConfig(block_c=2, block_r=128, num_stages=2, num_warps=4),
-            DepthwiseConv2dBwdWeightConfig(block_c=2, block_r=256, num_stages=2, num_warps=4),
-            DepthwiseConv2dBwdWeightConfig(block_c=4, block_r=128, num_stages=2, num_warps=4),
+            DepthwiseConv2dBwdWeightConfig(
+                block_c=1, block_r=128, num_stages=2, num_warps=4
+            ),
+            DepthwiseConv2dBwdWeightConfig(
+                block_c=1, block_r=256, num_stages=2, num_warps=4
+            ),
+            DepthwiseConv2dBwdWeightConfig(
+                block_c=2, block_r=128, num_stages=2, num_warps=4
+            ),
+            DepthwiseConv2dBwdWeightConfig(
+                block_c=2, block_r=256, num_stages=2, num_warps=4
+            ),
+            DepthwiseConv2dBwdWeightConfig(
+                block_c=4, block_r=128, num_stages=2, num_warps=4
+            ),
         ]
 
         self.flex_attn_fwd_autotune_configs: list[FlexConfig] = [
@@ -2332,6 +2342,31 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             FlexConfig(16, 32, 2, 2),
         ]
         self.exhaustive_flex_attn_fwd_configs = self.flex_attn_fwd_autotune_configs
+
+        # The inherited backward list is the same CUDA shape as the forward one:
+        # BLOCK_N up to 128 (which cannot stage on a 32KB budget, and trips the
+        # template's SPARSE_KV_BLOCK_SIZE >= BLOCK_N assert once the sparse block
+        # is smaller) crossed with four num_stages values that are inert on the
+        # MSL path, so it compiles four identical binaries per tile.
+        self.flex_attn_bwd_autotune_configs: list[FlexBwDConfig] = [
+            FlexBwDConfig(BLOCK_M, BLOCK_N, BLOCK_N, BLOCK_M, 2, 4)
+            for BLOCK_M in [32, 64]
+            for BLOCK_N in [32, 64]
+            if BLOCK_N % BLOCK_M == 0
+        ]
+        self.exhaustive_flex_attn_bwd_configs = self.flex_attn_bwd_autotune_configs
+
+    def get_flex_attn_bwd_configs(
+        self, head_dim: int, dtype: Any
+    ) -> list[FlexBwDConfig]:
+        configs = super().get_flex_attn_bwd_configs(head_dim, dtype)
+        # As in the forward override, drop the CUDA-shaped default the base
+        # class appends rather than let a config we cannot stage into the set.
+        configs = [c for c in configs if c in self.flex_attn_bwd_autotune_configs]
+        default = FlexBwDConfig(32, 32, 32, 32, 2, 4)
+        if default not in configs:
+            configs.append(default)
+        return configs
 
     def get_flex_attn_fwd_configs(
         self, head_dim: int, seq_len: sympy.Expr, dtype: Any
@@ -3898,5 +3933,3 @@ class MPSScaledMMTemplateConfigHeuristic(
         super().__init__()
         self.mm_configs = self.scaled_mm_configs
         self.exhaustive_configs = self.scaled_mm_configs
-
-

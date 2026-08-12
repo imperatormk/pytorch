@@ -128,7 +128,11 @@ def flex_attention_grid(batch_size, q_heads, num_queries, d_model, meta, *, cdiv
     return (cdiv(num_queries, meta["BLOCK_M"]), batch_size, q_heads)
 
 
-def get_float32_precision():
+def get_float32_precision(device_type: str = "cuda"):
+    # tf32 is a CUDA-only dot mode; every other backend either lacks it or, as
+    # on MPS, rejects it outright at compile time.
+    if device_type not in ("cuda", "xpu"):
+        return "'ieee'"
     if (
         (
             torch.backends.cuda.matmul.fp32_precision == "ieee"
@@ -274,7 +278,9 @@ def flex_attention(
         k: V.graph.sizevars.guard_int(v) if isinstance(v, sympy.Symbol) else v
         for k, v in kernel_options.items()
     }
-    kernel_options.setdefault("FLOAT32_PRECISION", get_float32_precision())
+    kernel_options.setdefault(
+        "FLOAT32_PRECISION", get_float32_precision(query.get_device().type)
+    )
     enable_gqa = V.graph.sizevars.evaluate_expr(
         sympy.Ne(query.get_size()[1], key.get_size()[1]),
     )
@@ -841,7 +847,9 @@ def flex_attention_backward(*args, **kwargs):
         k: V.graph.sizevars.guard_int(v) if isinstance(v, sympy.Symbol) else v
         for k, v in kernel_options.items()
     }
-    kernel_options.setdefault("FLOAT32_PRECISION", get_float32_precision())
+    kernel_options.setdefault(
+        "FLOAT32_PRECISION", get_float32_precision(query.get_device().type)
+    )
     kernel_options.setdefault("PRESCALE_QK", False)
     kernel_options.setdefault("ROWS_GUARANTEED_SAFE", False)
     kernel_options.setdefault("BLOCKS_ARE_CONTIGUOUS", False)
