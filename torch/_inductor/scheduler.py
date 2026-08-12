@@ -209,7 +209,8 @@ def _is_gpu_triton_backend(
         return False
     device_type = node1.get_device().type  # type: ignore[union-attr]
     return (
-        device_type in ("cuda", "xpu") and get_current_backend(device_type) == "triton"
+        device_type in ("cuda", "xpu", "mps")
+        and get_current_backend(device_type) == "triton"
     )
 
 
