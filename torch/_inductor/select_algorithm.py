@@ -5124,11 +5124,17 @@ class AlgorithmSelectorCache(PersistentCache):
             # choices take base pointers without the slice offset, extern ones
             # take the offset inputs. Always using the extern pair fed a triton
             # template the wrong addresses and made correct choices mismatch.
-            ref_extern = cls._is_extern(choices[0])
-            ref_inputs = example_inputs_extern if ref_extern else example_inputs
-            ref_out = out_extern if ref_extern else out
-            choices[0].benchmark(*ref_inputs, out=ref_out)
-            expected = ref_out.clone()
+            # A subgraph choice never writes `out` (it returns its result), so it
+            # cannot supply the reference: `out` would still hold whatever was
+            # there before and every other choice would look wrong.
+            if not isinstance(choices[0], SubgraphChoiceCaller):
+                ref_extern = cls._is_extern(choices[0])
+                ref_inputs = (
+                    example_inputs_extern if ref_extern else example_inputs
+                )
+                ref_out = out_extern if ref_extern else out
+                choices[0].benchmark(*ref_inputs, out=ref_out)
+                expected = ref_out.clone()
 
         return AutotuneArgs.from_choice_args(
             example_inputs,
