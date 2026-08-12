@@ -48,7 +48,11 @@ from torch.utils._triton import has_triton_tma_device
 
 # The MPS gold path (CPU + fp64) needs the same relocation helpers the
 # flex_attention suite already grew for it; import rather than duplicate.
-from .test_flex_attention import _is_mps_device, _relocate_captures
+from .test_flex_attention import (
+    _is_mps_device,
+    _relocate_block_mask,
+    _relocate_captures,
+)
 
 
 if IS_WINDOWS and IS_CI:
@@ -500,7 +504,7 @@ class TestFlexDecoding(InductorTestCase):
             # score_mod captured have to follow them off the device.
             sdpa_partial_gold = create_attention(
                 _relocate_captures(score_mod, "cpu"),
-                block_mask.to("cpu") if block_mask is not None else None,
+                _relocate_block_mask(block_mask, "cpu"),
                 enable_gqa=(Q_H != KV_H),
                 kernel_options=kernel_options,
             )
@@ -769,7 +773,7 @@ class TestFlexDecoding(InductorTestCase):
         if _is_mps_device(device):
             sdpa_partial_gold = create_attention(
                 _relocate_captures(score_mod, "cpu"),
-                block_mask.to("cpu"),
+                _relocate_block_mask(block_mask, "cpu"),
                 enable_gqa=(Q_H != KV_H),
             )
         else:

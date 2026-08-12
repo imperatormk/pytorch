@@ -547,6 +547,26 @@ def _relocate_captures(mod, device):
     )
 
 
+def _relocate_block_mask(block_mask, device):
+    """BlockMask.to(device) moves the mask tensors but not its mask_mod's captures.
+
+    A mask_mod can close over a tensor the same way a score_mod can:
+
+        head_type = torch.tensor([...], device="mps")
+        def mask_mod(b, h, q_idx, kv_idx):
+            return head_type[h] & (q_idx >= kv_idx)   # captures `head_type`
+
+    so a bare block_mask.to("cpu") for the float64 reference run leaves
+    `head_type` on MPS, and the first CPU index into it raises a device
+    mismatch. Move the captures too.
+    """
+    if block_mask is None:
+        return None
+    relocated = block_mask.to(device)
+    relocated.mask_mod = _relocate_captures(relocated.mask_mod, device)
+    return relocated
+
+
 def batch_reserve(paged_attention: PagedAttention, target_seq_len: Tensor):
     (B,) = target_seq_len.shape
     for b in range(B):
@@ -712,7 +732,7 @@ class TestFlexAttention(InductorTestCase):
         if _is_mps_device(device):
             sdpa_partial_gold = create_attention(
                 _relocate_captures(score_mod, "cpu"),
-                block_mask.to("cpu"),
+                _relocate_block_mask(block_mask, "cpu"),
                 enable_gqa=(Q_H != KV_H),
             )
         else:
@@ -966,7 +986,7 @@ class TestFlexAttention(InductorTestCase):
             # captures and block_mask must be relocated off-device too.
             sdpa_partial_gold = create_attention(
                 _relocate_captures(score_mod, "cpu"),
-                block_mask.to("cpu"),
+                _relocate_block_mask(block_mask, "cpu"),
                 enable_gqa=(Q_H != KV_H),
             )
         else:
@@ -7520,7 +7540,7 @@ class TestBlockMask(InductorTestCase):
                 f"Expected device type {device.type}, got {block_mask.q_num_blocks.device.type}"
             )
 
-        block_mask = block_mask.to("cpu")
+        block_mask = _relocate_block_mask(block_mask, "cpu")
         if not block_mask.kv_indices.is_cpu:
             raise AssertionError("Expected kv_indices to be on CPU")
         if not block_mask.kv_num_blocks.is_cpu:
@@ -8283,7 +8303,7 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
 
         # Test device movement
         if device != "cpu":
-            cpu_mask = block_mask.to("cpu")
+            cpu_mask = _relocate_block_mask(block_mask, "cpu")
             self.assertEqual(cpu_mask.kv_num_blocks.device.type, "cpu")
             self.assertIsNone(cpu_mask.q_indices)
 
@@ -8992,7 +9012,7 @@ class TestPagedAttention(InductorTestCase):
             # captures and block_mask must be relocated off-device too.
             sdpa_partial_gold = create_attention(
                 _relocate_captures(score_mod, "cpu"),
-                block_mask.to("cpu"),
+                _relocate_block_mask(block_mask, "cpu"),
                 enable_gqa=False,
             )
         else:
