@@ -35,6 +35,7 @@ from .common import (
     create_indices_fake_generator,
     create_num_blocks_fake_generator,
     create_placeholder,
+    drop_unused_captures,
     freeze_irnodes,
     get_fwd_subgraph_outputs,
     infer_dense_strides,
@@ -256,6 +257,9 @@ def flex_attention(
             ("n", torch.int32),
         ]
     ]
+    score_mod_other_buffers = drop_unused_captures(
+        [(subgraph, len(placeholder_inps))], score_mod_other_buffers
+    )
     subgraph_buffer = build_subgraph_buffer(
         placeholder_inps + list(score_mod_other_buffers), subgraph
     )
@@ -270,6 +274,9 @@ def flex_attention(
             ("n", torch.int32),
         ]
     ]
+    mask_mod_other_buffers = drop_unused_captures(
+        [(mask_graph, len(mask_graph_placeholder_inps))], mask_mod_other_buffers
+    )
     mask_graph_buffer = build_subgraph_buffer(
         mask_graph_placeholder_inps + list(mask_mod_other_buffers), mask_graph
     )
@@ -874,16 +881,26 @@ def flex_attention_backward(*args, **kwargs):
             ("n", torch.int32),
         ]
     ]
-    fw_subgraph_buffer = build_subgraph_buffer(
-        fwd_placeholder_inps + list(score_mod_other_buffers), fw_graph
-    )
-    freeze_irnodes(fw_subgraph_buffer)
-
     joint_placeholder_inps = fwd_placeholder_inps + [
         create_placeholder("grad_score_mod", dtype, device)
     ]
     # Sometimes we have weird unused nodes here
     joint_graph.graph_module.graph.eliminate_dead_code()
+
+    # Both graphs are called with these captures, so a capture is only droppable
+    # when neither reads it. Done before fw is lowered so both see one list.
+    score_mod_other_buffers = drop_unused_captures(
+        [
+            (fw_graph, len(fwd_placeholder_inps)),
+            (joint_graph, len(joint_placeholder_inps)),
+        ],
+        score_mod_other_buffers,
+    )
+
+    fw_subgraph_buffer = build_subgraph_buffer(
+        fwd_placeholder_inps + list(score_mod_other_buffers), fw_graph
+    )
+    freeze_irnodes(fw_subgraph_buffer)
 
     # It is hard to raise nice errors for some joint graphs during subgraph lowering
     # This lets us do some checks before attempting to lower
@@ -909,6 +926,9 @@ def flex_attention_backward(*args, **kwargs):
             ("n", torch.int32),
         ]
     ]
+    mask_mod_other_buffers = drop_unused_captures(
+        [(mask_graph, len(mask_graph_placeholder_inps))], mask_mod_other_buffers
+    )
     mask_graph_buffer = build_subgraph_buffer(
         mask_graph_placeholder_inps + list(mask_mod_other_buffers), mask_graph
     )

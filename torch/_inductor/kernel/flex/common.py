@@ -180,6 +180,46 @@ def get_fwd_subgraph_outputs(
     return [*subgraph_buffer, *mask_graph_buffer]
 
 
+def drop_unused_captures(graphs_and_fixed_inps, other_buffers):
+    """Drop captured buffers that none of the given subgraphs reads.
+
+    A score_mod/mask_mod may close over a tensor without using its value
+    (`_ = unused[h]; return score`). The lowering emits no load for it, so the
+    generated kernel has no argument for it, while the autotuner still passes
+    one -- the launcher then gets one positional argument too many. Keeping the
+    two in step means not passing what no graph reads.
+
+    `graphs_and_fixed_inps` pairs each subgraph sharing these captures with its
+    count of leading fixed placeholders; the placeholders after those line up
+    with `other_buffers` in order. A buffer is dropped only if every graph
+    leaves it unused, and its placeholder is erased alongside it, since the
+    placeholder list is the signature lowering will be called with.
+    """
+    per_graph = []
+    for subgraph, num_fixed_inps in graphs_and_fixed_inps:
+        graph_module = getattr(subgraph, "graph_module", subgraph)
+        placeholders = [n for n in graph_module.graph.nodes if n.op == "placeholder"][
+            num_fixed_inps:
+        ]
+        if len(placeholders) != len(other_buffers):
+            return list(other_buffers)
+        per_graph.append((graph_module, placeholders))
+
+    used = [
+        any(len(placeholders[i].users) > 0 for _, placeholders in per_graph)
+        for i in range(len(other_buffers))
+    ]
+    if all(used):
+        return list(other_buffers)
+
+    for graph_module, placeholders in per_graph:
+        for p, keep in zip(placeholders, used):
+            if not keep:
+                graph_module.graph.erase_node(p)
+        graph_module.recompile()
+    return [b for b, keep in zip(other_buffers, used) if keep]
+
+
 def build_subgraph_module_buffer(
     args: list[TensorBox],
     graph_module: torch.fx.GraphModule,
