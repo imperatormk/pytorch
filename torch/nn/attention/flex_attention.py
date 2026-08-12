@@ -2214,9 +2214,16 @@ def _validate_device(query: Tensor, key: Tensor, value: Tensor) -> None:
     if query.device.type == "mps" and (
         query.requires_grad or key.requires_grad or value.requires_grad
     ):
-        raise NotImplementedError(
-            "FlexAttention does not support backward on MPS. Please set the input requires_grad to False or use another device."
-        )
+        # Imported lazily: this module is reachable without inductor.
+        from torch._inductor import config as inductor_config
+
+        # The Metal flex backend has no backward kernel. The Triton one lowers
+        # but miscompiles on Apple GPU today (task #269); it is left reachable
+        # so the repro runs, and refused here only for the Metal default.
+        if inductor_config.mps_flex_backend == "metal":
+            raise NotImplementedError(
+                "FlexAttention does not support backward on MPS. Please set the input requires_grad to False or use another device."  # noqa: B950
+            )
     supported_devices = {"cuda", "cpu", "xpu", "hpu", "mps"}
     if query.device.type not in supported_devices:
         raise ValueError(

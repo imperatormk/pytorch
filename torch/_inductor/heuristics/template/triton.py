@@ -2316,6 +2316,36 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # validated a larger Apple-GPU search space.
         self.exhaustive_configs = self.mm_configs
 
+        # Flex attention tiles. The base class defaults to 128x64 (fp16) /
+        # 64x64 (fp32) at num_stages=3, which are CUDA shapes: on a 32KB
+        # threadgroup budget a 128x64 fp32 tile cannot stage its operands, and
+        # num_stages is inert on the MSL path (see the class docstring), so
+        # every ns variant would compile to the same kernel. These mirror the
+        # tiles the flash-attention template already found optimal on Apple
+        # (task #233: BLOCK_M=32/BLOCK_N=32 at num_warps=4 won a 27-config
+        # sweep at S>=512, D=64).
+        self.flex_attn_fwd_autotune_configs = [
+            FlexConfig(32, 32, 2, 4),
+            FlexConfig(64, 32, 2, 4),
+            FlexConfig(32, 64, 2, 4),
+            FlexConfig(64, 64, 2, 8),
+            FlexConfig(16, 32, 2, 2),
+        ]
+        self.exhaustive_flex_attn_fwd_configs = self.flex_attn_fwd_autotune_configs
+
+    def get_flex_attn_fwd_configs(
+        self, head_dim: int, seq_len: sympy.Expr, dtype: Any
+    ) -> list[FlexConfig]:
+        configs = super().get_flex_attn_fwd_configs(head_dim, seq_len, dtype)
+        # The base implementation appends a CUDA-shaped default that our tile
+        # budget cannot honour; replace it rather than let it into the set.
+        nw = 4 if head_dim <= 64 else 2
+        default = FlexConfig(32, 32, 2, nw)
+        configs = [c for c in configs if c in self.flex_attn_fwd_autotune_configs]
+        if default not in configs:
+            configs.append(default)
+        return configs
+
 
 # Template-specific mixin classes
 class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
@@ -3841,3 +3871,32 @@ class MPSMMPlusMMTemplateConfigHeuristic(
         super().__init__()
         self.mm_configs = self.mm_plus_mm_configs
         self.exhaustive_configs = self.mm_plus_mm_configs
+
+
+# Without these, the registry cascade (name, device, op) -> (name, device, None)
+# hands int_mm and scaled_mm the plain fp32 mm_configs, which offer the
+# BLOCK_K=16 tiles has_int8_tensor exists to exclude.
+@register_template_heuristic(mm_template.uid, "mps", op_name="int_mm")
+class MPSInt8MMTemplateConfigHeuristic(
+    INT8MMTemplateConfigMixin, MPSMMTemplateConfigHeuristic
+):
+    """Int8 MM template heuristic for Apple GPU (MPS)"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mm_configs = self.int8_mm_configs
+        self.exhaustive_configs = self.int8_mm_configs
+
+
+@register_template_heuristic(mm_template.uid, "mps", op_name="scaled_mm")
+class MPSScaledMMTemplateConfigHeuristic(
+    ScaledMMConfigMixin, MPSMMTemplateConfigHeuristic
+):
+    """Scaled MM template heuristic for Apple GPU (MPS)"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mm_configs = self.scaled_mm_configs
+        self.exhaustive_configs = self.scaled_mm_configs
+
+

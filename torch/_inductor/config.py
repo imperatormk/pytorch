@@ -2819,6 +2819,22 @@ mps_densify_mat2: bool = Config(
     default=True,
 )
 
+# Which backend lowers flex_attention on MPS. "metal" is the hand-written Metal
+# shader: forward only, one fixed tile, no autotuning and no epilogue fusion.
+# "triton" routes to the same TritonTemplate every other backend uses, which
+# autotunes over tile shapes, at the cost of going through the out-of-tree
+# Apple GPU backend.
+#
+# Defaults to triton because the measured gap is large and one-sided. On an M4,
+# score_mod=alibi, paired per-shape across an 18-row sweep (fp32 and fp16, S
+# from 128 to 2048, D from 32 to 128), triton wins EVERY row by 4.5x-14.7x and
+# both arms match eager. The margin grows with sequence length (9.3x at S=128,
+# 14.7x at S=2048), and it survives per-iteration synchronize, so it is kernel
+# time and not launch overhead.
+mps_flex_backend: Literal["metal", "triton"] = os.environ.get(  # type: ignore[assignment]
+    "TORCHINDUCTOR_MPS_FLEX_BACKEND", "triton"
+)
+
 # Backend to use for XPU codegen either "triton"
 xpu_backend: Literal["triton"] = "triton"
 

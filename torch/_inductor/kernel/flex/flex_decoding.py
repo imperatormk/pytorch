@@ -156,9 +156,16 @@ flex_decoding_template = TritonTemplate(
 )
 
 
-def get_split_k(B: int, H: int, Mk: int) -> int:
-    if torch.xpu.is_available():
+def get_split_k(B: int, H: int, Mk: int, device_type: str = "cuda") -> int:
+    if device_type == "xpu":
         num_SM = torch.xpu.get_device_properties("xpu").gpu_subslice_count
+    elif device_type == "mps":
+        # Metal exposes no core count, so this is a fixed estimate rather than a
+        # query. It only sets how many KV splits are offered; too high wastes
+        # the partial-reduction buffers, too low underfills the GPU. 32 sits in
+        # the middle of the shipping range (M1 8 cores to M-series Max/Ultra
+        # 64+) and only shows up divided by B*H.
+        num_SM = 32
     else:
         num_SM = torch.cuda.get_device_properties("cuda").multi_processor_count
     bh = max(B * H, 1)  # NOTE: Handle B*h=0 case
@@ -281,7 +288,9 @@ def create_flex_decoding_kernel(*args, **kwargs):
     # TODO: fix autotuning.
 
     kernel_options.setdefault("SM_SCALE", scale)
-    kernel_options.setdefault("SPLIT_KV", get_split_k(B, Hkv, seq_len_kv))
+    kernel_options.setdefault(
+        "SPLIT_KV", get_split_k(B, Hkv, seq_len_kv, query.get_device().type)
+    )
     MAX_SPLIT_KV = kernel_options["SPLIT_KV"]
 
     # create config dependent intermediate buffers

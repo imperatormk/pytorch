@@ -16,6 +16,7 @@ from torch._inductor.virtualized import V
 from torch.nn.attention.flex_attention import _Backend
 from torch.utils._sympy.functions import FloorDiv
 
+from ... import config
 from ...ir import ComputedBuffer, ExternKernel, FixedLayout, TensorBox
 from ...lowering import empty, empty_strided, lowerings, register_lowering, to_dtype
 from ...runtime.runtime_utils import is_power_of_2
@@ -183,7 +184,7 @@ def flex_attention(
             score_mod_other_buffers,
             mask_mod_other_buffers,
         )
-    if query.get_device().type == "mps":
+    if query.get_device().type == "mps" and config.mps_flex_backend == "metal":
         from .flex_mps import lower_mps
 
         return lower_mps(
@@ -743,10 +744,26 @@ def flex_attention_backward(*args, **kwargs):
         score_mod_other_buffers,
         mask_mod_other_buffers,
     ) = args
-    if query.get_device().type == "mps":
+    # The Metal flex backend is forward-only, so it always refuses. The Triton
+    # path lowers and runs but currently MISCOMPILES on the Apple GPU backend:
+    # at B1H4S128D32 fp32 the forward is exact (5.1e-07) while dq/dk/dv come
+    # back ~450x too large (4.67e+02 vs a dense-attention reference 9.77e-01),
+    # and fp16 returns NaN/inf. Only S=64/D=16 passes, and only because it is
+    # small enough to take the flex_decoding path instead of the backward
+    # kernel. Tracked as task #269 -- it is a backend codegen bug, not a
+    # routing gap.
+    #
+    # Left reachable under mps_flex_backend="triton" rather than hard-gated, so
+    # the repro stays runnable while #269 is open. Anyone training on MPS
+    # should keep the default until the gradients are verified.
+    if query.get_device().type == "mps" and config.mps_flex_backend == "metal":
         raise NotImplementedError(
-            "flex_attention backward is not yet supported on MPS. "
-            "Use torch.no_grad() for inference."
+            "flex_attention backward is not supported by the MPS Metal flex "
+            "backend, which is forward-only. Set "
+            "torch._inductor.config.mps_flex_backend = 'triton' to reach the "
+            "Triton backward kernel -- but note it currently miscompiles on "
+            "Apple GPU (task #269), so gradients are wrong. Use "
+            "torch.no_grad() for inference."
         )
     (
         _,  # q_length

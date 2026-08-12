@@ -1816,6 +1816,12 @@ def is_big_gpu(index_or_device: int | torch.device = 0) -> bool:
 def get_max_num_sms() -> int:
     if torch.xpu.is_available():
         return torch.xpu.get_device_properties().gpu_subslice_count
+    if torch.backends.mps.is_available() and not torch.cuda.is_available():
+        # Metal exposes no core count. This is a fixed estimate in the middle of
+        # the shipping range (M1 8 cores to M-series Max/Ultra 64+); callers use
+        # it only to size persistent-kernel grids. Without it the else-branch
+        # raises "Torch not compiled with CUDA enabled" on any MPS caller.
+        return 32
     return torch.cuda.get_device_properties("cuda").multi_processor_count
 
 
@@ -1842,6 +1848,9 @@ def get_num_sms() -> int:
     """Handle experimental carveout if set otherwise return hardware SM count"""
     # TODO we need to properly guard on this global
     if torch.xpu.is_available():
+        return get_max_num_sms()
+    if torch.backends.mps.is_available() and not torch.cuda.is_available():
+        # The carveout global is CUDA-only; there is nothing to subtract.
         return get_max_num_sms()
     carveout = torch._C._get_sm_carveout_experimental()
     return get_max_num_sms() - (carveout if carveout is not None else 0)

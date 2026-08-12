@@ -1,6 +1,8 @@
 # mypy: allow-untyped-defs
 """MPS-specific lowering for flex attention."""
 
+import logging
+
 import sympy
 
 import torch
@@ -13,7 +15,50 @@ from ...utils import expr_fits_within_32bit
 from .common import infer_dense_strides, maybe_realize
 
 
+log = logging.getLogger(__name__)
+
+
 BLOCK_M = 32
+
+# Metal's per-threadgroup limits. block_m is the threadgroup size
+# (group_size=[block_m, 1, 1] in MetalFlexAttentionNode), so both bind.
+_MAX_THREADGROUP_BYTES = 32768
+_MAX_THREADS_PER_THREADGROUP = 1024
+
+
+def _resolve_block_m(kernel_options, d_qk: int, d_v: int, dtype) -> int:
+    """BLOCK_M from kernel_options, rejecting values the Metal kernel cannot honour.
+
+    Silently ignoring it is worse than refusing it: the user believes they tuned
+    the kernel and did not. The bounds mirror the shader generator
+    (metal_flex_attention_template.py:627-634).
+    """
+    requested = kernel_options.get("BLOCK_M")
+    if requested is None:
+        return BLOCK_M
+
+    block_m = int(requested)
+    if block_m <= 0 or block_m % 8 != 0:
+        raise ValueError(
+            f"flex_attention on MPS requires BLOCK_M to be a positive multiple "
+            f"of 8 (the simdgroup-matrix tile), got {requested}"
+        )
+    if block_m > _MAX_THREADS_PER_THREADGROUP:
+        raise ValueError(
+            f"flex_attention on MPS uses BLOCK_M as the threadgroup size, which "
+            f"Metal caps at {_MAX_THREADS_PER_THREADGROUP}, got {block_m}"
+        )
+
+    bytes_per_elem = dtype.itemsize
+    staged = block_m * d_qk * bytes_per_elem + max(d_qk, d_v) * bytes_per_elem
+    staged += block_m * 4
+    if staged > _MAX_THREADGROUP_BYTES:
+        raise ValueError(
+            f"flex_attention on MPS: BLOCK_M={block_m} needs {staged} bytes of "
+            f"threadgroup memory for d_qk={d_qk} d_v={d_v} {dtype}, over Metal's "
+            f"{_MAX_THREADGROUP_BYTES} limit. Use a smaller BLOCK_M."
+        )
+    return block_m
 
 
 def lower_mps(
@@ -102,19 +147,21 @@ def lower_mps(
             f"got d_qk={d_qk} d_k={d_k}"
         )
 
+    block_m = _resolve_block_m(kernel_options, d_qk, d_v, dtype)
+
     sizevars = V.graph.sizevars
     if not sizevars.evaluate_expr(sympy.Eq(B, Bkv) | sympy.Eq(Bkv, 1)):
         raise AssertionError(f"Bq and Bkv must broadcastable. Got Bq={B} and Bkv={Bkv}")
 
     SPARSE_KV_BLOCK_SIZE_val = sizevars.guard_int(SPARSE_KV_BLOCK_SIZE)
     SPARSE_Q_BLOCK_SIZE_val = sizevars.guard_int(SPARSE_Q_BLOCK_SIZE)
-    if SPARSE_Q_BLOCK_SIZE_val < BLOCK_M or SPARSE_Q_BLOCK_SIZE_val % BLOCK_M != 0:
+    if SPARSE_Q_BLOCK_SIZE_val < block_m or SPARSE_Q_BLOCK_SIZE_val % block_m != 0:
         # Each threadgroup tiles BLOCK_M query rows and looks up sparse-mask info
         # at sparse_q_idx = m_base / SPARSE_Q_BLOCK_SIZE; a smaller/non-multiple
         # SPARSE_Q_BLOCK_SIZE makes one threadgroup span multiple sparse blocks.
         raise NotImplementedError(
             f"flex_attention on MPS requires SPARSE_Q_BLOCK_SIZE to be a positive "
-            f"multiple of {BLOCK_M}, got {SPARSE_Q_BLOCK_SIZE_val}"
+            f"multiple of {block_m}, got {SPARSE_Q_BLOCK_SIZE_val}"
         )
 
     if not sizevars.statically_known_multiple_of(Hq, Hkv):
@@ -168,7 +215,7 @@ def lower_mps(
         score_mod_graph=subgraph.graph_module,
         mask_mod_graph=mask_graph.graph_module,
         has_full_blocks=has_full_blocks,
-        block_m=BLOCK_M,
+        block_m=block_m,
         scale=scale_val,
         score_captured=score_meta,
         mask_captured=mask_meta,
@@ -240,7 +287,7 @@ def lower_mps(
 
     # (num_q_blocks, Hq, B); each threadgroup owns BLOCK_M query rows.
     grid = (
-        sympy.ceiling(seq_len_q / BLOCK_M),
+        sympy.ceiling(seq_len_q / block_m),
         Hq,
         B,
     )
@@ -266,7 +313,7 @@ def lower_mps(
         shader_source=shader_source,
         scalar_args=scalar_args,
         grid=grid,
-        block_m=BLOCK_M,
+        block_m=block_m,
         num_mutated_outputs=int(write_lse) + int(write_max),
     )
 
