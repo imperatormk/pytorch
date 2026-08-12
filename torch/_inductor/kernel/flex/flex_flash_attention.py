@@ -28,6 +28,7 @@ from .aux_vectorization import (
 )
 from .common import (
     create_indices_fake,
+    create_indices_fake_generator,
     create_num_blocks_fake_generator,
     infer_dense_strides,
     load_flex_template,
@@ -566,15 +567,18 @@ def create_flex_flash_attention_kernel(
 
     input_gen_fns: dict[int, Callable] | None = None
     if needs_block_mask:
+        # Share the block budget with the full pass when there is one, so the
+        # two cover disjoint KV ranges the way a real BlockMask's do.
+        partial_fraction = 0.5 if has_full_blocks else 1.0
         input_gen_fns = {
-            4: create_num_blocks_fake_generator(kv_indices),
+            4: create_num_blocks_fake_generator(kv_indices, partial_fraction),
             5: create_indices_fake,
         }
         if has_full_blocks:
             input_gen_fns.update(
                 {
-                    6: create_num_blocks_fake_generator(full_kv_indices),
-                    7: create_indices_fake,
+                    6: create_num_blocks_fake_generator(full_kv_indices, 0.5),
+                    7: create_indices_fake_generator(0.5),
                 }
             )
 
@@ -916,11 +920,13 @@ def create_flex_flash_attention_backward_kernel(
 
     input_gen_fns: dict[int, Callable] | None = None
     if has_block_mask:
+        # Split the block budget so the partial and full passes cover disjoint
+        # ranges, the way a real BlockMask's do.
         input_gen_fns = {
-            8: create_num_blocks_fake_generator(q_indices),
+            8: create_num_blocks_fake_generator(q_indices, 0.5),
             9: create_indices_fake,
-            10: create_num_blocks_fake_generator(full_q_indices),
-            11: create_indices_fake,
+            10: create_num_blocks_fake_generator(full_q_indices, 0.5),
+            11: create_indices_fake_generator(0.5),
         }
 
     template_output, _ = autotune_select_algorithm(

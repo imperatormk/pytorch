@@ -32,6 +32,7 @@ from .common import (
     build_subgraph_buffer,
     can_skip_boundary_checks,
     create_indices_fake,
+    create_indices_fake_generator,
     create_num_blocks_fake_generator,
     create_placeholder,
     freeze_irnodes,
@@ -593,11 +594,13 @@ def flex_attention(
         + list(score_mod_other_buffers)
         + list(mask_mod_other_buffers)
     )
+    # Split the block budget so the partial and full passes cover disjoint KV
+    # ranges, the way a real BlockMask's do.
     input_gen_fns = {
-        5: create_num_blocks_fake_generator(kv_indices),
+        5: create_num_blocks_fake_generator(kv_indices, 0.5),
         6: create_indices_fake,
-        7: create_num_blocks_fake_generator(full_kv_indices),
-        8: create_indices_fake,
+        7: create_num_blocks_fake_generator(full_kv_indices, 0.5),
+        8: create_indices_fake_generator(0.5),
     }
 
     out, _ = autotune_select_algorithm(
@@ -1185,15 +1188,19 @@ def flex_attention_backward(*args, **kwargs):
         + list(mask_mod_other_buffers)
         + joint_outputs.mutated_grads
     )
+    # Split each block budget so the partial and full passes cover disjoint
+    # ranges, the way a real BlockMask's do.
     input_gen_fns = {
-        8: create_num_blocks_fake_generator(kv_indices),  # kv_num_blocks
+        8: create_num_blocks_fake_generator(kv_indices, 0.5),  # kv_num_blocks
         9: create_indices_fake,
-        10: create_num_blocks_fake_generator(q_indices),  # q_num_blocks
+        10: create_num_blocks_fake_generator(q_indices, 0.5),  # q_num_blocks
         11: create_indices_fake,
-        12: create_num_blocks_fake_generator(full_kv_indices),  # full_kv_num_blocks
-        13: create_indices_fake,
-        14: create_num_blocks_fake_generator(full_q_indices),  # full_q_num_blocks
-        15: create_indices_fake,
+        12: create_num_blocks_fake_generator(
+            full_kv_indices, 0.5
+        ),  # full_kv_num_blocks
+        13: create_indices_fake_generator(0.5),
+        14: create_num_blocks_fake_generator(full_q_indices, 0.5),  # full_q_num_blocks
+        15: create_indices_fake_generator(0.5),
     }
 
     broadcasted_grad_key, _ = autotune_select_algorithm(

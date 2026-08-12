@@ -25,6 +25,7 @@ from .common import (
     _flex_kernel_tuning_options,
     can_skip_boundary_checks,
     create_indices_fake,
+    create_indices_fake_generator,
     create_num_blocks_fake_generator,
     freeze_irnodes,
     get_fwd_subgraph_outputs,
@@ -463,11 +464,13 @@ def create_flex_decoding_kernel(*args, **kwargs):
         + list(mask_mod_other_buffers)
     )
 
+    # Split the block budget so the partial and full passes cover disjoint KV
+    # ranges, the way a real BlockMask's do.
     input_gen_fns = {
-        5: create_num_blocks_fake_generator(kv_indices),
+        5: create_num_blocks_fake_generator(kv_indices, 0.5),
         6: create_indices_fake,
-        7: create_num_blocks_fake_generator(full_kv_indices),
-        8: create_indices_fake,
+        7: create_num_blocks_fake_generator(full_kv_indices, 0.5),
+        8: create_indices_fake_generator(0.5),
     }
 
     buf_ACC, _ = autotune_select_algorithm(

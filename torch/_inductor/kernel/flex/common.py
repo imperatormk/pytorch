@@ -417,7 +417,29 @@ def create_indices_fake(x) -> torch.Tensor:
     return indices
 
 
-def create_num_blocks_fake_generator(sparse_indices):
+def create_indices_fake_generator(rotate: float = 0.0):
+    """create_indices_fake, but starting `rotate` of the way into the blocks.
+
+    The partial and full passes both index from the front of their own indices
+    tensor, so identical index arrays send them at the same blocks even when
+    their counts are disjoint. Rotating one pass's indices makes the two cover
+    different blocks, which is what a real BlockMask does.
+    """
+
+    def create_indices_fake_rotated(x) -> torch.Tensor:
+        size = V.graph.sizevars.optimization_hints(x.get_size())
+        n = size[-1]
+        start = int(n * rotate)
+        indices = torch.arange(
+            start, start + n, dtype=x.get_dtype(), device=x.get_device()
+        )
+        indices = torch.where(indices < n, indices, indices - n)
+        return indices.expand(size).contiguous()
+
+    return create_indices_fake_rotated
+
+
+def create_num_blocks_fake_generator(sparse_indices, fraction: float = 1.0):
     """Create a fake num_blocks that is used for autotuning.
 
     The idea here is that we need to create a real tensor with real data
@@ -430,6 +452,14 @@ def create_num_blocks_fake_generator(sparse_indices):
     (Horace) think it'll probably result in pretty representative performance.
     If it's too short then prefetching won't help. If it's too long then
     autotuning will take longer for no good reason.
+
+    `fraction` is the share of that budget this count gets. A real BlockMask
+    classifies each block as either partial or full, never both, so
+    kv_num_blocks + full_kv_num_blocks never exceeds the number of blocks.
+    Giving both counts the whole budget makes the kernel walk every block twice,
+    once per pass, so the benchmark does about twice the KV work of the kernel
+    it is meant to model. Pass complementary fractions to keep the two passes
+    disjoint.
     """
 
     def create_num_blocks_fake(x) -> torch.Tensor:
@@ -439,7 +469,7 @@ def create_num_blocks_fake_generator(sparse_indices):
         size = V.graph.sizevars.optimization_hints(x.get_size())
         return torch.full(
             size,
-            num_blocks_for_autotuning,
+            int(num_blocks_for_autotuning * fraction),
             dtype=x.get_dtype(),
             device=x.get_device(),
         )
