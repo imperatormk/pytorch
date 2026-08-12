@@ -1161,7 +1161,7 @@ def _is_valid_concat_linear_int8_woq_optimization_pattern():
             and w2.dtype == torch.int8
             and w3.dtype == torch.int8
             and scales.dtype == torch.bfloat16
-            and x.device.type in ("cpu", "cuda")
+            and x.device.type in ("cpu", "cuda", "mps")
             and x.device == w1.device
             and w1.device == w2.device
             and w2.device == w3.device
@@ -1189,7 +1189,7 @@ def _is_valid_woq_optimization_pattern():
             x.dtype == torch.bfloat16
             and weight.dtype == torch.int8
             and scales.dtype == torch.bfloat16
-            and x.device.type in ("cpu", "cuda", "xpu")
+            and x.device.type in ("cpu", "cuda", "xpu", "mps")
             and x.device == weight.device
             and x.device == scales.device
         )

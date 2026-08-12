@@ -53,7 +53,7 @@ def register_quantized_ops() -> None:
 def register_woq_mm_ops() -> None:
     """Register weight-only quantized matmul lowerings."""
     from . import lowering
-    from .lowering import expand, register_lowering
+    from .lowering import expand, fallback_handler, register_lowering
 
     @register_lowering(aten._weight_int8pack_mm, type_promotion_kind=None)  # type: ignore[misc]
     def int8pack_mm(
@@ -98,6 +98,11 @@ def register_woq_mm_ops() -> None:
                 trans_w=True,
                 epilogue_creator=_mul_epilogue,  # type: ignore[arg-type]
             )
+
+        if not choices:
+            return fallback_handler(
+                aten._weight_int8pack_mm.default, add_to_fallback_set=False
+            )(input, weight, scale)
 
         node, _ = autotune_select_algorithm(
             "_weight_int8pack_mm", choices, [mat1, mat2, scale], aten_layout
