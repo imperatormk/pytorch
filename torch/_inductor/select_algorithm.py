@@ -2724,6 +2724,7 @@ class TritonTemplate(KernelTemplate):
         cache_codegen_enabled_for_template=False,
         prologue_loads_all_inputs=False,
         always_freeze_layout: bool = False,
+        config_dependent_output: bool = False,
     ) -> None:
         super().__init__(name, hash=hashlib.sha256(source.encode("utf-8")).hexdigest())
         self.grid = grid
@@ -2737,6 +2738,11 @@ class TritonTemplate(KernelTemplate):
             raise AssertionError("duplicate template name")
         TritonTemplate.all_templates[name] = self
         self.debug = debug
+        # True when the kernel writes a per-config intermediate rather than the
+        # op's final result, so two correct choices legitimately disagree on it
+        # and cross-choice verification does not apply. See
+        # AutotuneArgs.verify.
+        self.config_dependent_output = config_dependent_output
         self._cache_codegen_enabled_for_template = cache_codegen_enabled_for_template
         self._generated_code_cache: GeneratedCodeCache = GeneratedCodeCache()
         clear_on_fresh_cache(self._generated_code_cache)
@@ -5113,7 +5119,7 @@ class AlgorithmSelectorCache(PersistentCache):
 
         out_extern = torch.as_strided(out_base, out.size(), out.stride(), out_offset)
         expected = None
-        if VERIFY:
+        if VERIFY and not cls._has_config_dependent_output(choices):
             # The reference must run on the arm that matches choices[0]: triton
             # choices take base pointers without the slice offset, extern ones
             # take the offset inputs. Always using the extern pair fed a triton
@@ -5135,6 +5141,32 @@ class AlgorithmSelectorCache(PersistentCache):
     @staticmethod
     def _is_extern(choice: ChoiceCaller) -> bool:
         return isinstance(choice, (ExternKernelCaller, SubgraphChoiceCaller))
+
+    @staticmethod
+    def _has_config_dependent_output(choices: Sequence[ChoiceCaller]) -> bool:
+        """True if these choices write a per-config intermediate, not the result.
+
+        Cross-choice verification assumes every choice computes the same thing,
+        so any difference is a bug. That does not hold for a template whose
+        output buffer is an intermediate whose meaning depends on the config --
+        flex_decoding's buf_ACC/buf_M/buf_L are indexed by KV split, and the
+        split -> KV-range mapping is derived from BLOCK_N, so two correct
+        choices with different BLOCK_N fill them differently. Their final
+        attention outputs still agree; only this intermediate does not.
+        """
+        def template_of(choice: ChoiceCaller) -> TritonTemplate | None:
+            # A caller is named "triton_<template>_<index>" (see
+            # TritonTemplateKernel), so recover the template name from it.
+            name = getattr(choice, "name", None)
+            if not isinstance(name, str):
+                return None
+            name = name.removeprefix("triton_").rsplit("_", 1)[0]
+            return TritonTemplate.all_templates.get(name)
+
+        return any(
+            t is not None and t.config_dependent_output
+            for t in (template_of(c) for c in choices)
+        )
 
     @classmethod
     def benchmark_choice(

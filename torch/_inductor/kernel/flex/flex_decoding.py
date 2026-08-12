@@ -153,6 +153,11 @@ flex_decoding_template = TritonTemplate(
     + load_flex_template("utilities")
     + load_flex_template("common"),
     always_freeze_layout=True,
+    # buf_ACC/buf_M/buf_L are indexed by KV split, and TILE_KV (hence which
+    # split covers which KV range) is derived from BLOCK_N, so choices with
+    # different BLOCK_N fill them differently while still agreeing on the
+    # final attention output.
+    config_dependent_output=True,
 )
 
 
