@@ -109,7 +109,7 @@ def tuned_bmm(mat1, mat2, out_dtype=None, *, layout=None):
 
     if (
         out_dtype is None
-        and device_type in ("cuda", "xpu")
+        and device_type in ("cuda", "xpu", "mps")
         and device_type == mat2.get_device().type
         and dtype == mat2.get_dtype()
         and dtype in _BMM_DOT_DECOMPOSE_DTYPES
