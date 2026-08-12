@@ -522,6 +522,16 @@ def _as_fp64_graph(graph: str) -> str:
     return graph.replace("f32[", "f64[").replace("f64[2, 2, 128]", "f32[2, 2, 128]")
 
 
+def _has_fp64_golden(device) -> bool:
+    """Whether a float64 golden arm is usable for a backward test on `device`.
+
+    MPS has no float64, so the golden arm would have to run on CPU, and flex
+    has no CPU backward at all. Callers fall back to comparing the compiled
+    grads against the eager ones directly.
+    """
+    return not _is_mps_device(device)
+
+
 def _relocate_captures(mod, device):
     """Copy a score_mod / mask_mod with its captured tensors moved to `device`.
 
@@ -4025,8 +4035,9 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @supported_platform
     @skip_on_cpu
     def test_differentiable_logsumexp_gradcheck(self, device):
-        # See test_aot_eager_gradcheck for the per-device dtype rationale.
-        dtype = torch.float32 if _is_mps_device(device) else torch.float64
+        if _is_mps_device(device):
+            raise unittest.SkipTest("gradcheck needs fp64, which MPS lacks")
+        dtype = torch.float64
         make_tensor = functools.partial(
             torch.randn,
             (2, 2, 11, 4),
@@ -4204,8 +4215,9 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     def test_captured_score_mod_aot_eager_gradcheck(
         self, device, score_mod_name: str, mode: str
     ):
-        # See test_aot_eager_gradcheck for the per-device dtype rationale.
-        dtype = torch.float32 if _is_mps_device(device) else torch.float64
+        if _is_mps_device(device):
+            raise unittest.SkipTest("gradcheck needs fp64, which MPS lacks")
+        dtype = torch.float64
         make_tensor = functools.partial(
             torch.randn,
             (2, 2, 11, 4),
@@ -5977,16 +5989,20 @@ class GraphModule(torch.nn.Module):
             device=device,
             requires_grad=True,
         )
+        has_gold = _has_fp64_golden(device)
         q_ref, k_ref, v_ref = query_key_value_clones(q, k, v)
-        q_gold, k_gold, v_gold = query_key_value_clones(q, k, v, torch.float64)
 
         sdpa_partial = create_attention(score_mod, block_mask)
-        golden_out = sdpa_partial(q_gold, k_gold, v_gold)
         ref_out = sdpa_partial(q_ref, k_ref, v_ref)
 
         backward_grad = torch.randn((2, 2, 128, 16), dtype=dtype, device=device)
-        golden_out.backward(backward_grad.to(torch.float64))
         ref_out.backward(backward_grad)
+        if has_gold:
+            q_gold, k_gold, v_gold = query_key_value_clones(q, k, v, torch.float64)
+            golden_out = sdpa_partial(q_gold, k_gold, v_gold)
+            golden_out.backward(backward_grad.to(torch.float64))
+        else:
+            q_gold, k_gold, v_gold = q_ref, k_ref, v_ref
 
         out, logsumexp = flex_attention_fwd(
             q,
@@ -6148,15 +6164,19 @@ class GraphModule(torch.nn.Module):
         q = torch.randn((4, 2, 128, 16), dtype=dtype, device=device, requires_grad=True)
         k = torch.randn((1, 2, 128, 16), dtype=dtype, device=device, requires_grad=True)
         v = torch.randn((1, 2, 128, 16), dtype=dtype, device=device, requires_grad=True)
+        has_gold = _has_fp64_golden(device)
         q_ref, k_ref, v_ref = query_key_value_clones(q, k, v)
-        q_gold, k_gold, v_gold = query_key_value_clones(q, k, v, torch.float64)
 
         sdpa_partial = create_attention(score_mod, block_mask)
-        golden_out = sdpa_partial(q_gold, k_gold, v_gold)
         ref_out = sdpa_partial(q_ref, k_ref, v_ref)
         backward_grad = torch.randn_like(q)
-        golden_out.backward(backward_grad.to(torch.float64))
         ref_out.backward(backward_grad)
+        if has_gold:
+            q_gold, k_gold, v_gold = query_key_value_clones(q, k, v, torch.float64)
+            golden_out = sdpa_partial(q_gold, k_gold, v_gold)
+            golden_out.backward(backward_grad.to(torch.float64))
+        else:
+            q_gold, k_gold, v_gold = q_ref, k_ref, v_ref
 
         out, logsumexp = flex_attention_fwd(
             q,
@@ -6250,15 +6270,19 @@ class GraphModule(torch.nn.Module):
         q = torch.randn((2, 2, 128, 16), dtype=dtype, device=device, requires_grad=True)
         k = torch.randn((2, 2, 128, 16), dtype=dtype, device=device, requires_grad=True)
         v = torch.randn((2, 2, 128, 16), dtype=dtype, device=device, requires_grad=True)
+        has_gold = _has_fp64_golden(device)
         q_ref, k_ref, v_ref = query_key_value_clones(q, k, v)
-        q_gold, k_gold, v_gold = query_key_value_clones(q, k, v, torch.float64)
 
         ref_attention = create_attention(score_mod, base_block_mask)
-        golden_out = ref_attention(q_gold, k_gold, v_gold)
         ref_out = ref_attention(q_ref, k_ref, v_ref)
         backward_grad = torch.randn((2, 2, 128, 16), dtype=dtype, device=device)
-        golden_out.backward(backward_grad.to(torch.float64))
         ref_out.backward(backward_grad)
+        if has_gold:
+            q_gold, k_gold, v_gold = query_key_value_clones(q, k, v, torch.float64)
+            golden_out = ref_attention(q_gold, k_gold, v_gold)
+            golden_out.backward(backward_grad.to(torch.float64))
+        else:
+            q_gold, k_gold, v_gold = q_ref, k_ref, v_ref
         static_shift = 0
 
         out, logsumexp, _ = flex_attention_hop(
