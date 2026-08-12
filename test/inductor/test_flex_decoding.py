@@ -401,6 +401,13 @@ class TestFlexDecoding(InductorTestCase):
         fudge_factor: float,
         tensor_name: str | None = None,
     ):
+        # The fp64 golden runs on CPU (MPS has no fp64) while the other arms
+        # stay on device, so bring everything to one device before subtracting.
+        dev = golden_out.device
+        if ref_out.device != dev:
+            ref_out = ref_out.to(dev)
+        if compiled_out.device != dev:
+            compiled_out = compiled_out.to(dev)
         compiled_error = (golden_out - compiled_out).abs().mean()
         ref_error = (golden_out - ref_out).abs().mean()
         if torch.isnan(compiled_error).any() and not torch.isnan(ref_error).any():
@@ -2136,13 +2143,24 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
         def eager_sdpa_hop(q, k, v, score_mod):
             return flex_attention(q, k, v, score_mod, return_lse=True)
 
+        # MPS has no float64, so the fp64 reference runs on CPU, and the
+        # score_mod's captures have to follow it off the device.
+        ref_q, ref_k, ref_v = q, k, v
+        ref_score_mod = score_mod
+        if _is_mps_device(device):
+            # detach: .cpu() keeps requires_grad, and flex has no CPU backward,
+            # so an autograd-tracked reference raises instead of running.
+            ref_q, ref_k, ref_v = q.detach().cpu(), k.detach().cpu(), v.detach().cpu()
+            ref_score_mod = _relocate_captures(score_mod, "cpu")
         ref_out, ref_lse = eager_sdpa_hop(
-            q.to(torch.float64),
-            k.to(torch.float64),
-            v.to(torch.float64),
-            score_mod,
+            ref_q.to(torch.float64),
+            ref_k.to(torch.float64),
+            ref_v.to(torch.float64),
+            ref_score_mod,
         )
         compiled_out, compiled_lse = sdpa_hop(q, k, v, score_mod)
+        if _is_mps_device(device):
+            compiled_out, compiled_lse = compiled_out.cpu(), compiled_lse.cpu()
 
         self.assertTrue(ref_lse.dtype == torch.float64)
         self.assertTrue(compiled_lse.dtype == torch.float32)
@@ -2403,8 +2421,20 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
             ref_out = flex_attention(
                 q_ref, k_ref, v_ref, score_mod, slice_block_mask, enable_gqa=False
             )
+            # On MPS the fp64 golden runs on CPU, so its mask and the
+            # score_mod's captures have to follow it off the device.
+            gold_block_mask = slice_block_mask
+            gold_score_mod = score_mod
+            if _is_mps_device(device):
+                gold_block_mask = _relocate_block_mask(slice_block_mask, "cpu")
+                gold_score_mod = _relocate_captures(score_mod, "cpu")
             golden_out = flex_attention(
-                q_gold, k_gold, v_gold, score_mod, slice_block_mask, enable_gqa=False
+                q_gold,
+                k_gold,
+                v_gold,
+                gold_score_mod,
+                gold_block_mask,
+                enable_gqa=False,
             )
 
             ref_outs.append(ref_out)
