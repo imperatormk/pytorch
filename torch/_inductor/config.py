@@ -2807,6 +2807,13 @@ mps_backend: Literal["metal", "triton"] = os.environ.get(  # type: ignore[assign
 
 # Whether an MPS matmul with a K-major mat2 also offers a choice that makes it
 # contiguous first. Set to 0 to withhold that choice, leaving the direct gather.
+#
+# The kernel-level win is real and large on an M4 -- 92.1 ms gathering vs 65.6
+# copying at M4096/K30522/N768 -- but it has never been shown to move an
+# end-to-end number. Paired A/B on DistilBert training measures this ON as 0.20%
+# SLOWER at bs4 and indistinguishable at bs16, because the vocab GEMM's M is
+# batch x seq and the gather penalty is only 1.09x at M=512. bs32 would reach
+# M=4096 but OOMs on a 20 GiB budget.
 mps_densify_mat2: bool = Config(
     env_name_force="TORCHINDUCTOR_MPS_DENSIFY_MAT2",
     default=True,
