@@ -656,7 +656,7 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
     """
     Lowering for autotuning aten.addmm with different backends (Aten, Triton, CUTLASS, etc.)
     """
-    if beta == 0 and mat1.get_device().type == "cuda":
+    if beta == 0 and mat1.get_device().type in ("cuda", "mps"):
         _check_addmm_input_metadata(inp, mat1, mat2)
         if alpha == 0:
             _, _, _, layout, mat1, mat2 = mm_args(mat1, mat2, layout=layout)

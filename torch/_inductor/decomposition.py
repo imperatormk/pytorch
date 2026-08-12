@@ -483,8 +483,8 @@ def addmm(
             return out + beta * self
         return out + self
 
-    if mat1.device.type not in ["cpu", "mps"]:
-        if beta == 0 and mat1.device.type == "cuda":
+    if mat1.device.type != "cpu":
+        if beta == 0 and mat1.device.type in ("cuda", "mps"):
             return NotImplemented
         if (
             statically_known_true(mat1.size(-1) == 1)
