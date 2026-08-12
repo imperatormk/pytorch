@@ -511,6 +511,17 @@ def query_key_value_clones(
     return query_ref, key_ref, value_ref
 
 
+def _as_fp64_graph(graph: str) -> str:
+    """Retag an fp32 printed graph as its fp64 equivalent.
+
+    The graph-shape tests compare against an expected string recorded in
+    float64. MPS has no float64 so the same graph is traced in float32, and
+    only the dtype tags differ. LSE is float32 in the float64 graph too, so it
+    is retagged back after the blanket swap.
+    """
+    return graph.replace("f32[", "f64[").replace("f64[2, 2, 128]", "f32[2, 2, 128]")
+
+
 def _relocate_captures(mod, device):
     """Copy a score_mod / mask_mod with its captured tensors moved to `device`.
 
@@ -5840,7 +5851,7 @@ def forward(self, child : torch.Tensor, child_1 : torch.Tensor, child_2 : torch.
         graph = cnt.graphs[0]
         norm_graph = normalize_gm(graph.print_readable(print_output=False))
         if dtype is torch.float32:
-            norm_graph = norm_graph.replace("f32[", "f64[")
+            norm_graph = _as_fp64_graph(norm_graph)
         self.assertExpectedInline(
             norm_graph,
             """\
@@ -5891,6 +5902,8 @@ class GraphModule(torch.nn.Module):
         out.sum().backward()
 
         joint_graph = normalize_gm(aot_graphs[1].print_readable(print_output=False))
+        if dtype is torch.float32:
+            joint_graph = _as_fp64_graph(joint_graph)
         self.assertExpectedInline(
             joint_graph,
             """\
