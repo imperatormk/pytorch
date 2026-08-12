@@ -326,6 +326,17 @@ _tf32_off_cudnn_ctx = None
 
 @contextlib.contextmanager
 def tf32_off():
+    # TF32 is a CUDA-only dot mode, and disabling it here is not free on other
+    # backends: allow_tf32 = False rewrites the *legacy* float32_matmul_precision
+    # to HIGHEST while leaving MKLDNN's entry wherever an earlier
+    # set_float32_matmul_precision("high") put it (TF32). Nothing on a non-CUDA
+    # build ever moves MKLDNN back, so float32MatmulPrecision()'s consistency
+    # check then throws for the rest of the process -- which inductor hits on
+    # every subsequent compile, since it reads that value as an autotune cache
+    # key. Leave the flags alone where there is no CUDA to configure.
+    if not torch.cuda.is_available():
+        yield
+        return
     # First-in saves state and disables tf32; last-out restores. Multithreaded
     # test runners (e.g. MultiThreadedTestCase) enter this context once per
     # rank thread over the same process-global flags, so per-entry
