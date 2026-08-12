@@ -158,7 +158,8 @@ def use_native_matmul(mat1, mat2):
     # Currently only enable native matmul for triton on GPU.
     device_type = mat1.get_device().type
     if not (
-        device_type in ("cuda", "xpu") and get_current_backend(device_type) == "triton"
+        device_type in ("cuda", "xpu", "mps")
+        and get_current_backend(device_type) == "triton"
     ):
         return False
 
