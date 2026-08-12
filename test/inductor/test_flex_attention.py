@@ -3958,9 +3958,13 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
         "score_mod", [_identity, _causal, _times_two, _squared, _trig, _trig2]
     )
     def test_aot_eager_gradcheck(self, device, score_mod):
-        # MPS lacks fp64; on MPS we just need _validate_device to raise NIE,
-        # so use fp32 — the call never gets far enough for precision to matter.
-        dtype = torch.float32 if _is_mps_device(device) else torch.float64
+        if _is_mps_device(device):
+            # gradcheck compares the analytic jacobian against finite
+            # differences, which needs fp64 to land inside its tolerances. MPS
+            # has no fp64, so in fp32 the comparison is ill-posed and reports a
+            # jacobian mismatch for a correct gradient.
+            raise unittest.SkipTest("gradcheck needs fp64, which MPS lacks")
+        dtype = torch.float64
         make_tensor = functools.partial(
             torch.randn,
             (2, 2, 11, 4),
@@ -5464,14 +5468,19 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
         # Create tensors on different devices
         q, k, v = (torch.randn(1, 8, 128, 64, device=device) for _ in range(3))
 
+        # The size only errors if no config's tiles divide it. MPS tiles at
+        # 32x32 and 16x32, all of which divide 96, so that config is valid there
+        # and compiles -- the size that probes this is device-specific.
+        block_size = 24 if _is_mps_device(device) else 96
+
         expected_error_message = (
             "Invalid FlexAttention forward kernel options: Q and KV block sizes "
             "must be divisible by the selected tile sizes.*"
-            "SPARSE_Q_BLOCK_SIZE=96.*SPARSE_KV_BLOCK_SIZE=96.*"
+            f"SPARSE_Q_BLOCK_SIZE={block_size}.*SPARSE_KV_BLOCK_SIZE={block_size}.*"
             "BLOCK_M=\\d+.*BLOCK_N=\\d+"
         )
         block_mask = create_block_mask(
-            noop_mask, 1, 8, 128, 128, BLOCK_SIZE=96, device=device
+            noop_mask, 1, 8, 128, 128, BLOCK_SIZE=block_size, device=device
         )
 
         with self.assertRaisesRegex(RuntimeError, expected_error_message):
@@ -5805,7 +5814,9 @@ def forward(self, child : torch.Tensor, child_1 : torch.Tensor, child_2 : torch.
     @skip_on_cpu
     def test_fw_bw_graph_correctness(self, device):
         cnt = CompileCounterWithBackend("aot_eager")
-        # MPS lacks fp64; the NIE fires before any assertion would care.
+        # MPS lacks fp64, so it traces the same graph in f32. Only the dtype tag
+        # differs, and it is normalised away below so one expected graph serves
+        # both.
         dtype = torch.float32 if _is_mps_device(device) else torch.float64
         make_tensor = functools.partial(
             torch.randn,
@@ -5828,6 +5839,8 @@ def forward(self, child : torch.Tensor, child_1 : torch.Tensor, child_2 : torch.
         self.assertEqual(len(cnt.graphs), 1)
         graph = cnt.graphs[0]
         norm_graph = normalize_gm(graph.print_readable(print_output=False))
+        if dtype is torch.float32:
+            norm_graph = norm_graph.replace("f32[", "f64[")
         self.assertExpectedInline(
             norm_graph,
             """\

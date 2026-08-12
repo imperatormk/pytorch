@@ -237,6 +237,12 @@ def evaluate_platform_supports_fp8():
             return SM90OrLater or torch.cuda.get_device_capability() == (8, 9)
     if torch.xpu.is_available():
         return True
+    if torch.backends.mps.is_available():
+        # MPS has no fp8 dtype at all: casting to it raises "Undefined type
+        # Float8_e4m3fn" in eager, before any compile step. Falling through to
+        # the CPU-justified True below made fp8 tests pick e4m3 and die on the
+        # first `.to()`.
+        return False
     # As CPU supports FP8 and is always available, return True.
     return True
 
