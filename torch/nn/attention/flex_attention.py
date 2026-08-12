@@ -2168,13 +2168,19 @@ def _apply_kernel_options(
         # We used to check if q,k,v required grads but since captured buffers can require grad
         # we always write unless in no_grad
         kernel_options["OUTPUT_LOGSUMEXP"] = torch.is_grad_enabled()
-        if any_inputs_on_cpu_device or any_inputs_on_mps_device:
-            # CPU/MPS support inference only, no LSE/backward yet.
+        if any_inputs_on_cpu_device:
+            # CPU supports inference only, no LSE/backward yet.
             # TODO: support CPU for training and return lse
             kernel_options["OUTPUT_LOGSUMEXP"] = False
         if any_inputs_on_mps_device:
-            # MPS supports inference only; backward / LSE not yet implemented
-            kernel_options["OUTPUT_LOGSUMEXP"] = False
+            # The Metal flex backend is forward-only and has no LSE store; the
+            # Triton one does. Suppressing the store unconditionally left the
+            # backward reading a zeroed LSE, which silently scales every
+            # gradient by exp(lse) instead of erroring.
+            from torch._inductor import config as inductor_config
+
+            if inductor_config.mps_flex_backend == "metal":
+                kernel_options["OUTPUT_LOGSUMEXP"] = False
 
     # If forward kernel needs to return max is decided by this rule internally.
     if "OUTPUT_MAX" in kernel_options:
