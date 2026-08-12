@@ -567,6 +567,41 @@ def _relocate_block_mask(block_mask, device):
     return relocated
 
 
+def _relocate_call(call, device):
+    """Move the tensors an attention callable carries to `device`.
+
+    The reference arm of a test is often a functools.partial that binds a mask:
+
+        sdpa_mask = _get_windowed_sdpa_mask(..., device)   # on MPS
+        partial(scaled_dot_product_attention, attn_mask=sdpa_mask)
+
+    The float64 reference runs on CPU (MPS has no fp64), so that bound mask has
+    to come along or the call mixes devices. Handles partials (keywords, args
+    and nested partial funcs) and plain closures.
+    """
+    if isinstance(call, functools.partial):
+        return functools.partial(
+            _relocate_call(call.func, device),
+            *(
+                _relocate_block_mask(a, device)
+                if isinstance(a, BlockMask)
+                else a.to(device)
+                if isinstance(a, torch.Tensor)
+                else a
+                for a in call.args
+            ),
+            **{
+                k: _relocate_block_mask(v, device)
+                if isinstance(v, BlockMask)
+                else v.to(device)
+                if isinstance(v, torch.Tensor)
+                else v
+                for k, v in call.keywords.items()
+            },
+        )
+    return _relocate_captures(call, device)
+
+
 def batch_reserve(paged_attention: PagedAttention, target_seq_len: Tensor):
     (B,) = target_seq_len.shape
     for b in range(B):

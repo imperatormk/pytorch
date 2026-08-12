@@ -51,6 +51,7 @@ from torch.utils._triton import has_triton_tma_device
 from .test_flex_attention import (
     _is_mps_device,
     _relocate_block_mask,
+    _relocate_call,
     _relocate_captures,
 )
 
@@ -575,7 +576,15 @@ class TestFlexDecoding(InductorTestCase):
         q_gold, k_gold, v_gold = query_key_value_clones(q, k, v, torch.float64)
 
         compiled_sdpa = torch.compile(sdpa_call)
-        golden_out = golden_call(q_gold, k_gold, v_gold)
+        # q_gold/k_gold/v_gold are on CPU when the device has no fp64, so any
+        # tensor the golden callable binds (an attn_mask, a block mask) has to
+        # move with them.
+        gold_call = (
+            _relocate_call(golden_call, "cpu")
+            if _is_mps_device(device)
+            else golden_call
+        )
+        golden_out = gold_call(q_gold, k_gold, v_gold)
         ref_out = golden_call(q_ref, k_ref, v_ref)
         compiled_out = compiled_sdpa(q, k, v)
 
@@ -849,7 +858,15 @@ class TestFlexDecoding(InductorTestCase):
         golden_call = functools.partial(
             torch.nn.functional.scaled_dot_product_attention, attn_mask=sdpa_mask
         )
-        golden_out = golden_call(q_gold, k_gold, v_gold)
+        # The fp64 golden inputs live on CPU when the device has no fp64, so
+        # the mask bound into golden_call has to move with them; q_ref stays on
+        # device, so the ref arm keeps the original.
+        gold_call = (
+            _relocate_call(golden_call, "cpu")
+            if _is_mps_device(device)
+            else golden_call
+        )
+        golden_out = gold_call(q_gold, k_gold, v_gold)
         ref_out = golden_call(q_ref, k_ref, v_ref)
 
         if mask_mod is not None:
