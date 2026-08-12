@@ -6,6 +6,11 @@
     stride_vz, stride_vh, stride_vn, stride_vk = {{stride("V")}}
     stride_oz, stride_oh, stride_om, stride_ok = {{stride("DO")}}
     stride_lz, stride_lh, stride_lm = {{stride("LSE")}}
+    # DELTA gets its own strides: LSE is an external input whose layout inductor
+    # does not control, DELTA is a reduce_sum this lowering builds. Nothing makes
+    # them agree, and reusing LSE's strides reads delta at in-bounds but wrong
+    # addresses -- silently wrong gradients, no error.
+    stride_dz, stride_dh, stride_dm = {{stride("DELTA")}}
     stride_dqz, stride_dqh, stride_dqm, stride_dqk = {{stride("DQ")}}
     stride_dvz, stride_dvh, stride_dvn, stride_dvk = {{stride("DV")}}
 
@@ -31,7 +36,7 @@
     vb = V + off_z * stride_vz + off_h * stride_vh
     dob = DO + off_z * stride_oz + off_h * stride_oh
     lb = LSE + off_z * stride_lz + off_h * stride_lh
-    db = DELTA + off_z * stride_lz + off_h * stride_lh
+    db = DELTA + off_z * stride_dz + off_h * stride_dh
 
     offs_d = tl.arange(0, HEAD_DIM)
     d_mask = offs_d < HEAD_DIM_REAL
@@ -47,7 +52,7 @@
         do = tl.load(dob + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok,
                      mask=m_mask[:, None] & d_mask[None, :], other=0.0)
         lse = tl.load(lb + offs_m * stride_lm, mask=m_mask, other=float("inf"))
-        delta = tl.load(db + offs_m * stride_lm, mask=m_mask, other=0.0)
+        delta = tl.load(db + offs_m * stride_dm, mask=m_mask, other=0.0)
 
         dq = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
 
@@ -116,7 +121,7 @@
             do = tl.load(dob + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok,
                          mask=m_mask[:, None] & d_mask[None, :], other=0.0)
             lse = tl.load(lb + offs_m * stride_lm, mask=m_mask, other=float("inf"))
-            delta = tl.load(db + offs_m * stride_lm, mask=m_mask, other=0.0)
+            delta = tl.load(db + offs_m * stride_dm, mask=m_mask, other=0.0)
 
             qk = tl.dot(q, tl.trans(k)) * SM_SCALE
             valid = m_mask[:, None] & n_mask[None, :]
