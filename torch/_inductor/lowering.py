@@ -757,7 +757,6 @@ def make_pointwise(
         )
         if allow_alpha:
             if alpha is not None and alpha != 1:
-                # Use FMA for add-with-alpha on CUDA floating-point.
                 # Eager CUDA computes a + alpha * b as fma(b, alpha, a).
                 if use_fma_for_alpha and isinstance(inputs[0], IRNode):
                     inp_device = inputs[0].get_device()
@@ -765,7 +764,7 @@ def make_pointwise(
                         inputs[0].get_dtype().is_floating_point
                         and not torch.version.hip
                         and inp_device is not None
-                        and inp_device.type == "cuda"
+                        and inp_device.type in ("cuda", "mps")
                     ):
                         return _add_with_alpha_fma(inputs[0], inputs[1], alpha)
 
