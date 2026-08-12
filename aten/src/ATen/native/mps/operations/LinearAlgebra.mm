@@ -22,6 +22,7 @@
 #else
 #include <ATen/ScalarOps.h>
 #include <ATen/ops/_cholesky_solve_helper_native.h>
+#include <ATen/ops/_int_mm_native.h>
 #include <ATen/ops/_linalg_check_errors.h>
 #include <ATen/ops/_linalg_eigh.h>
 #include <ATen/ops/_linalg_solve_ex_native.h>
@@ -2438,6 +2439,80 @@ TORCH_IMPL_FUNC(linalg_lu_factor_ex_out_mps)
 
 TORCH_IMPL_FUNC(linalg_inv_ex_out_mps)(const Tensor& A, bool check_errors, const Tensor& result, const Tensor& info) {
   mps::linalg_inv_ex_out_mps_impl(A, check_errors, result, info);
+}
+
+Tensor& _int_mm_out_mps(const Tensor& self, const Tensor& mat2, Tensor& out) {
+  static constexpr std::string_view func_name = "int_mm_out_mps";
+  TORCH_CHECK(self.dim() == 2, func_name, ": Expected self to be of dimension 2 but got ", self.dim());
+  TORCH_CHECK(mat2.dim() == 2, func_name, ": Expected mat2 to be of dimension 2 but got ", mat2.dim());
+  TORCH_CHECK(self.size(1) == mat2.size(0),
+              func_name,
+              ": self.size(1) needs to match mat2.size(0) but got ",
+              self.size(1),
+              " and ",
+              mat2.size(0));
+  TORCH_CHECK(self.dtype() == at::kChar || self.dtype() == at::kByte,
+              func_name,
+              ": Expected self dtype to be int8 or uint8 but got ",
+              self.dtype());
+  TORCH_CHECK(
+      mat2.dtype() == at::kChar, func_name, ": Expected mat2 dtype to be of type int8 but got ", mat2.dtype());
+  TORCH_CHECK(
+      out.dtype() == at::kInt, func_name, ": Expected out dtype to be of type kInt but got ", out.dtype());
+  TORCH_CHECK(out.size(0) == self.size(0),
+              func_name,
+              ": Expected out.size(0) to be ",
+              self.size(0),
+              " but got ",
+              out.size(0));
+  TORCH_CHECK(out.size(1) == mat2.size(1),
+              func_name,
+              ": Expected out.size(1) to be ",
+              mat2.size(1),
+              " but got ",
+              out.size(1));
+  TORCH_CHECK(out.dim() == 2, func_name, ": Expected out to be of dimension 2 but got ", out.dim());
+  TORCH_CHECK(out.is_contiguous(), func_name, ": Expected out to be contiguous.");
+
+  // Matches _int_mm_out_cpu: an empty output or a zero contraction dim is zero,
+  // not undefined. Must come before the dispatch, which assumes a non-empty K.
+  if (out.numel() == 0 || self.size(1) == 0) {
+    return out.zero_();
+  }
+
+  auto self_ = self.is_conj() ? self.resolve_conj() : self;
+  auto mat2_ = mat2.is_conj() ? mat2.resolve_conj() : mat2;
+
+  auto stream = getCurrentMPSStream();
+  const std::string kernel =
+      fmt::format("int_matmul_{}_char", self_.scalar_type() == at::kByte ? "uchar" : "char");
+  auto intMatmulPSO = mps::lib.getPipelineStateForFunc(kernel);
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      getMPSProfiler().beginProfileKernel(intMatmulPSO, "int_matmul", {self_, mat2_});
+      auto computeEncoder = stream->commandEncoder();
+      [computeEncoder setComputePipelineState:intMatmulPSO];
+      std::array<uint32_t, 3> sizes = {static_cast<uint32_t>(self_.size(0)),
+                                       static_cast<uint32_t>(self_.size(1)),
+                                       static_cast<uint32_t>(out.size(1))};
+      std::array<int64_t, 6> strides = {
+          self_.stride(0), self_.stride(1), mat2_.stride(0), mat2_.stride(1), out.stride(0), out.stride(1)};
+      constexpr uint32_t TILE_DIM = 16;
+      uint32_t gridSizeX = (out.size(1) + TILE_DIM - 1) / TILE_DIM;
+      uint32_t gridSizeY = (self_.size(0) + TILE_DIM - 1) / TILE_DIM;
+      MTLSize threadsPerThreadgroup = MTLSizeMake(TILE_DIM, TILE_DIM, 1);
+      MTLSize threadgroupsPerGrid = MTLSizeMake(gridSizeX, gridSizeY, 1);
+      mps::mtl_setArgs(computeEncoder, self_, mat2_, out, strides, sizes);
+      [computeEncoder dispatchThreadgroups:threadgroupsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+      getMPSProfiler().endProfileKernel(intMatmulPSO);
+    }
+  });
+  return out;
+}
+
+Tensor _int_mm_mps(const Tensor& self, const Tensor& mat2) {
+  Tensor out = at::empty({self.size(0), mat2.size(1)}, self.options().dtype(at::kInt));
+  return _int_mm_out_mps(self, mat2, out);
 }
 
 REGISTER_DISPATCH(cholesky_stub, mps::cholesky_stub_impl)

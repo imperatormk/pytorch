@@ -1,6 +1,7 @@
 //  Copyright © 2026 Apple Inc.
 
 #include <ATen/mps/MPSKinetoProfiler.h>
+#include <c10/util/CallOnce.h>
 
 #ifdef USE_KINETO
 #include <libkineto.h>
