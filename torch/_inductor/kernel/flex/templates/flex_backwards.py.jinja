@@ -174,8 +174,11 @@
             Di = tl.load(DELTA2 + offs_m2)
             lse = tl.load(LSE2 + offs_m2)
         else:
-            Di = tl.load(DELTA2 + offs_m2, mask=offs_m2 < Q_LEN)
-            lse = tl.load(LSE2 + offs_m2, mask=offs_m2 < Q_LEN)
+            # other=0.0: a masked tl.load leaves out-of-range lanes undefined,
+            # and Di feeds `ds = p * (dp - Di)` where p is 0 on those lanes --
+            # 0 * garbage is NaN if the garbage is inf.
+            Di = tl.load(DELTA2 + offs_m2, mask=offs_m2 < Q_LEN, other=0.0)
+            lse = tl.load(LSE2 + offs_m2, mask=offs_m2 < Q_LEN, other=0.0)
         lse = tl.where(lse == -float("inf"), 0.0, lse)
         lse = lse[:, None]
 
@@ -688,7 +691,7 @@ def bwd_dkdv_block_mn(
     if IS_DIVISIBLE:
         lse = tl.load(LSE + offs_m1)
     else:
-        lse = tl.load(LSE + offs_m1, mask=offs_m1 < Q_LEN)
+        lse = tl.load(LSE + offs_m1, mask=offs_m1 < Q_LEN, other=0.0)
     lse = tl.where(lse == -float("inf"), 0.0, lse)
     qkT = tl.dot(k, qT, input_precision=FLOAT32_PRECISION)
     if not PRESCALE_QK:
@@ -769,7 +772,9 @@ def bwd_dkdv_block_mn(
     if IS_DIVISIBLE:
         Di = tl.load(DELTA + offs_m1)
     else:
-        Di = tl.load(DELTA + offs_m1, mask=offs_m1 < Q_LEN)
+        # See the DELTA2 load above: without other=, the masked lanes are
+        # undefined and reach `dsT = pT * (dpT - Di)`.
+        Di = tl.load(DELTA + offs_m1, mask=offs_m1 < Q_LEN, other=0.0)
     # Compute dP and dS.
     dpT = tl.dot(v, tl.trans(do), input_precision=FLOAT32_PRECISION)
     dsT = pT * (dpT - Di[None, :])
