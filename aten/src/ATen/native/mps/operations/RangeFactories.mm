@@ -6,7 +6,10 @@
 #include <ATen/native/RangeUtils.h>
 #include <ATen/native/mps/OperationUtils.h>
 #include <ATen/ops/arange_native.h>
+#include <ATen/ops/empty.h>
 #include <ATen/ops/linspace_native.h>
+#include <ATen/ops/logspace_native.h>
+#include <ATen/ops/pow.h>
 #include <ATen/ops/range_native.h>
 #include <array>
 #include <cmath>
@@ -248,6 +251,36 @@ Tensor& linspace_out_mps(const Scalar& start, const Scalar& end, int64_t steps, 
       }
     });
   }
+  return result;
+}
+
+Tensor& logspace_out_mps(const Scalar& start, const Scalar& end, int64_t steps, double base, Tensor& result) {
+  TORCH_CHECK(steps >= 0, "number of steps must be non-negative");
+  if (result.numel() != steps) {
+    result.resize_({steps});
+  }
+  if (steps == 0) {
+    return result;
+  }
+  if (steps == 1) {
+    result.fill_(std::pow(base, start.to<double>()));
+    return result;
+  }
+
+  // logspace is base ** linspace, and linspace already has an MPS kernel. Take
+  // the exponents in float regardless of the output dtype: an integral result
+  // still has to be rounded from a real-valued power, and linspace into an
+  // integral tensor would truncate each exponent first.
+  const auto float_opts = result.options().dtype(
+      isFloatingType(result.scalar_type()) ? result.scalar_type() : ScalarType::Float);
+  auto exponents = at::empty({steps}, float_opts);
+  linspace_out_mps(start, end, steps, exponents);
+
+  auto powers = at::pow(base, exponents);
+  if (powers.scalar_type() != result.scalar_type()) {
+    powers = powers.to(result.scalar_type());
+  }
+  result.copy_(powers.reshape(result.sizes()));
   return result;
 }
 
