@@ -16,7 +16,7 @@ from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
 aten = torch.ops.aten
 
 
-@inductor_config.patch({"triton.native_matmul": True})
+@inductor_config.patch({"triton.native_matmul": True, "triton.multi_kernel": 0})
 class TestTritonDotReduction(TestCase):
     def _check_equal(
         self, f: Callable, example_inputs: tuple[torch.Tensor], tol: float = 1e-4
