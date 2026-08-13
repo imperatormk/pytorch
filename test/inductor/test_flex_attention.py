@@ -3911,6 +3911,11 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @dtypesIfXPU(*device_configs["xpu"].dtypes)
     @common_utils.parametrize("score_mod", [_identity, _causal])
     def test_logsumexp_correctness(self, device, dtype, score_mod):
+        if not _has_fp64_golden(device):
+            raise unittest.SkipTest(
+                "needs an fp64 reference, which MPS lacks; a same-precision "
+                "reference would make the comparison vacuous"
+            )
         make_tensor = functools.partial(
             torch.randn,
             (B, H, S, D),
