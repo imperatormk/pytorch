@@ -5550,7 +5550,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                             f"{type(masked_value)}"
                         )
                     result_sum = self.cse.newvar(
-                        dtype=dtype, shape=cast(CSEVariable, result_var).shape
+                        dtype=torch_acc_type, shape=cast(CSEVariable, result_var).shape
                     )
                     result_var = self.online_softmax_reduce_final_reduction(
                         self.compute,
@@ -5691,7 +5691,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 # reduction
                 result_max = result_var
                 result_sum = self.cse.newvar(
-                    dtype=dtype, shape=cast(Any, result_max).shape
+                    dtype=torch_acc_type, shape=cast(Any, result_max).shape
                 )
 
                 result_var = self.online_softmax_reduce_final_reduction(
