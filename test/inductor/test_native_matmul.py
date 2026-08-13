@@ -104,6 +104,7 @@ class TestTritonDotReduction(TestCase):
         self._check_equal(f, (x, y))
         self._check_code(f, (x, y), 1, 1)
 
+    @inductor_config.patch({"max_autotune": False, "max_autotune_gemm": False})
     def test_3mm_add(self):
         def f(x, y, z, w, r, t):
             return x @ y + z @ w + r @ t
