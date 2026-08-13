@@ -24,13 +24,18 @@
 #include <ATen/ops/argmax_native.h>
 #include <ATen/ops/argmin_native.h>
 #include <ATen/ops/count_nonzero_native.h>
+#include <ATen/ops/div.h>
 #include <ATen/ops/max_native.h>
+#include <ATen/ops/mean.h>
 #include <ATen/ops/mean_native.h>
 #include <ATen/ops/min_native.h>
+#include <ATen/ops/mul.h>
 #include <ATen/ops/nansum_native.h>
 #include <ATen/ops/prod_native.h>
+#include <ATen/ops/sqrt.h>
 #include <ATen/ops/std_mean_native.h>
 #include <ATen/ops/std_native.h>
+#include <ATen/ops/sub.h>
 #include <ATen/ops/sum.h>
 #include <ATen/ops/sum_native.h>
 #include <ATen/ops/trace_native.h>
@@ -482,45 +487,33 @@ static Tensor std_var_common_impl_mps(const Tensor& input_t,
   }
 
   double dof = std::max(0.0, correction_n - correction_value);
-  double bessel_correction = correction_n / dof;
-  auto stream = getCurrentMPSStream();
 
-  @autoreleasepool {
-    std::string op_key = (stdVarType == STANDARD_DEVIATION) ? "std_mps" : "var_mps";
-    NSString* ns_key = [[wrappedAxes valueForKey:@"description"] componentsJoinedByString:@","];
-    std::string bessel_corrected = (use_correction && correction_value) ? "unbiased " : "biased ";
-    std::string use_dim_info = (use_dim) ? "use_dim=1:" + std::to_string(dim_value.size()) : "use_dim=0";
-    std::string keepdim_info = (keepdim) ? "keepdim=1" : "keepdim=0";
-    std::string key = op_key + ":" + getTensorsStringKey(input_t) + ":" + use_dim_info + ":" + keepdim_info + ":" +
-        std::string([ns_key UTF8String]) + ":" + bessel_corrected + ":" + std::to_string(correction_value);
-
-    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, input_t);
-      MPSGraphTensor* outputVarTensor = [mpsGraph varianceOfTensor:inputTensor axes:wrappedAxes name:nil];
-      MPSGraphTensor* outputTensor = nil;
-
-      if (use_correction && correction_value) {
-        MPSGraphTensor* besselTensor = [mpsGraph constantWithScalar:bessel_correction dataType:getMPSDataType(input_t)];
-        MPSGraphTensor* correctedTensor = [mpsGraph multiplicationWithPrimaryTensor:outputVarTensor
-                                                                    secondaryTensor:besselTensor
-                                                                               name:nil];
-        outputTensor = (stdVarType == STANDARD_DEVIATION) ? [mpsGraph squareRootWithTensor:correctedTensor name:nil]
-                                                          : correctedTensor;
-      } else {
-        outputTensor = (stdVarType == STANDARD_DEVIATION) ? [mpsGraph squareRootWithTensor:outputVarTensor name:nil]
-                                                          : outputVarTensor;
-      }
-      newCachedGraph->inputTensor_ = inputTensor;
-      newCachedGraph->outputTensor_ = outputTensor;
-    });
-
-    auto inputPlaceholder = Placeholder(cachedGraph->inputTensor_, input_t);
-    auto outputPlaceholder = Placeholder(cachedGraph->outputTensor_, output_t, apparent_output_shape);
-
-    auto feeds = dictionaryFromPlaceholders(inputPlaceholder);
-    runMPSGraph(stream, cachedGraph->graph(), feeds, outputPlaceholder);
+  std::vector<int64_t> reduce_dims;
+  if (use_dim && !dim_value.empty()) {
+    for (const auto d : dim_value) {
+      reduce_dims.push_back(maybe_wrap_dim(d, num_input_dims));
+    }
+  } else {
+    reduce_dims.resize(num_input_dims);
+    std::iota(reduce_dims.begin(), reduce_dims.end(), 0);
   }
 
+  auto flat = reduce_dims.empty() ? input_t.reshape({-1}) : input_t;
+  if (reduce_dims.empty()) {
+    reduce_dims.push_back(0);
+  }
+
+  auto dims_ref = IntArrayRef(reduce_dims);
+  auto mean_kept = at::mean(flat, dims_ref, /*keepdim=*/true);
+  auto deviation = at::sub(flat, mean_kept);
+  auto sum_sq = at::sum(at::mul(deviation, deviation), dims_ref, /*keepdim=*/true);
+
+  Tensor result = at::div(sum_sq, dof);
+  if (stdVarType == STANDARD_DEVIATION) {
+    result = at::sqrt(result);
+  }
+
+  output_t.copy_(result.reshape(output_t.sizes()));
   return output_t;
 }
 
