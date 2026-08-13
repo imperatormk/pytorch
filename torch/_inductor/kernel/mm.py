@@ -311,10 +311,12 @@ class ContiguousTemplate(SubgraphTemplate):
         if layout.device.type == "mps":
             # Subgraphs benchmark with autotuning off and ATEN only, which would
             # compare a Triton gather against an aten mm rather than against the
-            # same backend on a contiguous operand.
+            # same backend on a contiguous operand. Forward the caller's settings
+            # rather than forcing autotuning on, so a caller that banned a backend
+            # does not get it back inside the subgraph.
             choice.config_patches = {
-                "max_autotune": True,
-                "max_autotune_gemm": True,
+                "max_autotune": inductor_config.max_autotune,
+                "max_autotune_gemm": inductor_config.max_autotune_gemm,
                 "max_autotune_gemm_backends": inductor_config.max_autotune_gemm_backends,
             }
         return choice

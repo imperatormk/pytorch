@@ -2814,9 +2814,13 @@ mps_backend: Literal["metal", "triton"] = os.environ.get(  # type: ignore[assign
 # SLOWER at bs4 and indistinguishable at bs16, because the vocab GEMM's M is
 # batch x seq and the gather penalty is only 1.09x at M=512. bs32 would reach
 # M=4096 but OOMs on a 20 GiB budget.
+#
+# Default off: the subgraph's inner mm is autotuned as a top-level op, so the
+# dominant DistilBert vocab GEMM is swept twice -- once per mat2 layout -- and the
+# densified arm loses, 226.9 ms at strides [30522, 1] against 177.2 at [1, 768].
 mps_densify_mat2: bool = Config(
     env_name_force="TORCHINDUCTOR_MPS_DENSIFY_MAT2",
-    default=True,
+    default=False,
 )
 
 # Which backend lowers flex_attention on MPS. "metal" is the hand-written Metal
