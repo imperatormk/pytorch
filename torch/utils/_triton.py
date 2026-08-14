@@ -76,6 +76,30 @@ def has_triton_cpu_backend() -> bool:
 
 
 @functools.cache
+def has_triton_block_ptr() -> bool:
+    """Whether tl.make_block_ptr is still implemented.
+
+    Newer Triton removed the block pointer API in favour of tensor
+    descriptors. The name stays importable -- it is a stub that raises
+    NotImplementedError when the kernel is compiled -- so presence has to be
+    decided from the body rather than from the attribute.
+    """
+    if not has_triton_package():
+        return False
+    try:
+        import inspect
+
+        import triton.language as tl
+
+        fn = getattr(tl.make_block_ptr, "fn", tl.make_block_ptr)
+        return "NotImplementedError" not in inspect.getsource(fn)
+    except Exception:
+        # A source-less build (frozen, or a C extension) leaves the decision
+        # to the caller's own gating rather than silently disabling loads.
+        return True
+
+
+@functools.cache
 def has_triton_experimental_host_tma() -> bool:
     if has_triton_package():
         if _device_supports_tensor_descriptor():

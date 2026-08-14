@@ -38,6 +38,7 @@ from torch.utils._sympy.functions import (
 )
 from torch.utils._triton import (
     get_triton_version,
+    has_triton_block_ptr,
     has_triton_cpu_backend,
     has_triton_package,
     has_triton_stable_tma_api,
@@ -3835,7 +3836,12 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
         if (
             (
-                (block_ptr and self.allow_block_ptr and config.triton.use_block_ptr)
+                (
+                    block_ptr
+                    and self.allow_block_ptr
+                    and config.triton.use_block_ptr
+                    and has_triton_block_ptr()
+                )
                 or (
                     tma_compatibility_checker
                     and tma_compatibility_checker.can_use_tma()
