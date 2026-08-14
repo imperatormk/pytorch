@@ -83,6 +83,51 @@ kernel void embedding_dense_backward(
       grad_val);
 }
 
+// One thread per index. Duplicated indices would each scale the same row, so
+// only the first occurrence of a value acts -- the CPU kernel gets the same
+// effect by sorting and skipping equal neighbours.
+template <typename T, typename I>
+kernel void embedding_renorm(
+    device T* weight [[buffer(0)]],
+    constant I* indices [[buffer(1)]],
+    constant EmbeddingRenormParams& params [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  long row = static_cast<long>(indices[tid]);
+  for (uint i = 0; i < tid; ++i) {
+    if (static_cast<long>(indices[i]) == row) {
+      return;
+    }
+  }
+  device T* r = weight + row * static_cast<long>(params.weight_row_stride);
+  float acc = 0.0;
+  for (uint j = 0; j < params.feature_size; ++j) {
+    acc += ::metal::pow(::metal::fabs(static_cast<float>(r[j])), params.norm_type);
+  }
+  float norm = ::metal::pow(acc, 1.0f / params.norm_type);
+  if (norm <= params.max_norm) {
+    return;
+  }
+  float scale = params.max_norm / (norm + 1e-7f);
+  for (uint j = 0; j < params.feature_size; ++j) {
+    r[j] = static_cast<T>(static_cast<float>(r[j]) * scale);
+  }
+}
+
+#define REGISTER_EMBEDDING_RENORM(T, I)                       \
+  template [[host_name("embedding_renorm_" #T "_" #I)]]       \
+  kernel void embedding_renorm<T, I>(                         \
+      device T * weight [[buffer(0)]],                        \
+      constant I * indices [[buffer(1)]],                     \
+      constant EmbeddingRenormParams & params [[buffer(2)]],  \
+      uint tid [[thread_position_in_grid]])
+
+REGISTER_EMBEDDING_RENORM(float, int);
+REGISTER_EMBEDDING_RENORM(float, long);
+REGISTER_EMBEDDING_RENORM(half, int);
+REGISTER_EMBEDDING_RENORM(half, long);
+REGISTER_EMBEDDING_RENORM(bfloat, int);
+REGISTER_EMBEDDING_RENORM(bfloat, long);
+
 #define REGISTER_EMBEDDING_DENSE_BACKWARD_COUNT(I, O, OSUFFIX)                \
   template [[host_name("embedding_dense_backward_count_" #I "_" #OSUFFIX)]]   \
   kernel void embedding_dense_backward_count<I, O>(                           \

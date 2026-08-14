@@ -12,6 +12,7 @@
 #include <ATen/NativeFunctions.h>
 #else
 #include <ATen/ops/embedding_dense_backward_native.h>
+#include <ATen/ops/embedding_renorm_native.h>
 #include <ATen/ops/zeros.h>
 #endif
 
@@ -109,6 +110,54 @@ Tensor embedding_dense_backward_mps(const Tensor& grad_,
   });
 
   return low_prec ? grad_weight_acc.to(grad_.scalar_type()) : grad_weight_acc;
+}
+
+Tensor& embedding_renorm_mps_(Tensor& self, const Tensor& indices, double max_norm, double norm_type) {
+  using namespace at::native::mps;
+
+  auto self_arg = TensorArg(self, "self", 1);
+  auto indices_arg = TensorArg(indices, "indices", 2);
+  checkDim("embedding_renorm_", self_arg, 2);
+  checkScalarTypes("embedding_renorm_", indices_arg, {kLong, kInt});
+  checkScalarTypes("embedding_renorm_", self_arg, {kFloat, kHalf, kBFloat16});
+
+  auto num_indices = indices.numel();
+  if (num_indices == 0 || self.size(1) == 0) {
+    return self;
+  }
+  TORCH_CHECK(num_indices <= std::numeric_limits<int32_t>::max(),
+              "embedding_renorm_mps_: indices is larger than INT32_MAX");
+
+  auto indices_contig = indices.contiguous();
+  // The kernel walks a row with a plain stride, and scaling in place needs the
+  // rows it writes to be the caller's.
+  auto self_contig = self.is_contiguous() ? self : self.contiguous();
+
+  EmbeddingRenormParams params{};
+  params.num_indices = static_cast<uint32_t>(num_indices);
+  params.feature_size = safe_downcast<uint32_t, int64_t>(self_contig.size(1));
+  params.weight_row_stride = safe_downcast<uint32_t, int64_t>(self_contig.stride(0));
+  params.max_norm = static_cast<float>(max_norm);
+  params.norm_type = static_cast<float>(norm_type);
+
+  auto stream = at::mps::getCurrentMPSStream();
+  const auto idx_type_str = scalarToMetalTypeString(indices_contig);
+  const auto weight_type_str = scalarToMetalTypeString(self_contig);
+
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = stream->commandEncoder();
+      auto pso = lib.getPipelineStateForFunc(fmt::format("embedding_renorm_{}_{}", weight_type_str, idx_type_str));
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder, self_contig, indices_contig, params);
+      mtl_dispatch1DJob(computeEncoder, pso, num_indices);
+    }
+  });
+
+  if (!self.is_contiguous()) {
+    self.copy_(self_contig);
+  }
+  return self;
 }
 
 } // namespace at::native

@@ -2285,6 +2285,7 @@
   dispatch:
     CPU: embedding_renorm_cpu_
     CUDA: embedding_renorm_cuda_
+    MPS: embedding_renorm_mps_
     XPU: embedding_renorm_xpu_
   autogen: embedding_renorm, embedding_renorm.out
 
