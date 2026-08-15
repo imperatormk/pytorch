@@ -160,11 +160,23 @@ class CooperativeReductionTests(TestCase):
         # eager baseline does not itself carry the same accumulation error that
         # the compiled reduction does.
         ref_dtype = dtype
+        ref_device = None
         if dtype in (torch.float16, torch.float32):
             ref_dtype = torch.float64
+            # MPS has no float64, so the upcast has to happen on CPU. The
+            # reference is a precision oracle, not a device test, so where it
+            # runs does not matter -- only that it is more precise than the
+            # kernel under test.
+            if any(
+                isinstance(t, torch.Tensor) and t.device.type == "mps" for t in args
+            ):
+                ref_device = "cpu"
 
         # Cast to the determined reference dtype
-        args_ref = [tensor.to(ref_dtype) for tensor in args]
+        args_ref = [
+            tensor.to(device=ref_device or tensor.device, dtype=ref_dtype)
+            for tensor in args
+        ]
 
         # Calculate expected output
         raw_expected = fn(*args_ref)
@@ -195,6 +207,17 @@ class CooperativeReductionTests(TestCase):
 
         fn_compiled = torch.compile(fn, fullgraph=True)
         result, (source_code,) = run_and_get_code(fn_compiled, *args)
+
+        # The reference may have been computed on CPU (see ref_device above);
+        # bring it back so assert_close does not trip on a device mismatch.
+        if ref_device is not None:
+            dev = args[0].device
+            if isinstance(expected, (tuple, list)):
+                expected = type(expected)(
+                    t.to(dev) if isinstance(t, torch.Tensor) else t for t in expected
+                )
+            elif isinstance(expected, torch.Tensor):
+                expected = expected.to(dev)
 
         # For comparison, ensure result is also a tuple/list if expected is
         if isinstance(expected, (tuple, list)):
@@ -266,6 +289,12 @@ class CooperativeReductionTests(TestCase):
     )
     @parametrize("dtype", [torch.float16, torch.float32, torch.float64])
     def test_reduction_fns(self, name, dtype):
+        # Metal has no float64 type, so a float64 kernel cannot be built here at
+        # all -- unlike the float64 REFERENCE below, which is only a precision
+        # oracle and is computed on CPU.
+        if dtype == torch.float64 and GPU_TYPE == "mps":
+            self.skipTest("MPS has no float64")
+
         def fn(x, y):
             return reduction_fn(x + y, dim=-1)
 
