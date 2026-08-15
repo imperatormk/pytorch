@@ -6361,6 +6361,29 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
     ) -> dict[ChoiceCaller, float]:
         if hint_override not in self._choice_timings:
             self._choice_timings[hint_override] = self._choice_timings_fn(hint_override)
+
+            # The deferred path benchmarks here but never reaches
+            # AlgorithmSelectorCache.log_results, which is what prints the AUTOTUNE
+            # table on the eager path -- so these timings were computed and never
+            # reported. Written to fd 1: neither sys.stderr nor fd 2 reaches the
+            # caller's terminal from here.
+            import os
+
+            timings = self._choice_timings[hint_override]
+            if timings:
+                best = min(timings.values())
+                lines = [f"AUTOTUNE {self.get_name()} ({len(timings)} choices)"]
+                for choice in sorted(timings, key=timings.__getitem__)[
+                    : (config.autotune_num_choices_displayed or 10)
+                ]:
+                    t = timings[choice]
+                    mark = " <-- SELECTED" if t == best else ""
+                    desc = str(choice)
+                    if "(" in desc:
+                        desc = desc[desc.index("(") + 1 : desc.rindex(")")]
+                        desc = desc.split(", ", 1)[-1]
+                    lines.append(f"  {t:9.4f} ms {best / t:7.1%}  {desc}{mark}")
+                os.write(1, ("\n".join(lines) + "\n").encode())
         return self._choice_timings[hint_override]
 
     @contextlib.contextmanager
