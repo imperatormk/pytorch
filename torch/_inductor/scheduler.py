@@ -6054,8 +6054,16 @@ class Scheduler:
                 if bench_epilogue:
                     log_fusion(min_ms_fused, ms1, ms2)
 
+                # Kernels this small cannot be told apart by the benchmarker --
+                # timing one callable repeatedly spans more than the difference
+                # being measured -- so the comparison below is noise and rejects
+                # fusions that are in fact faster. speedup_by_combo_kernel skips
+                # benchmarking on the same grounds.
+                unfused_ms = ms1 + ms2
+                small_kernel = unfused_ms < 0.3 or min_ms_fused < 0.3
+
                 if (
-                    not bench_epilogue or min_ms_fused < (ms1 + ms2)
+                    not bench_epilogue or min_ms_fused < unfused_ms or small_kernel
                 ) and ms_fused_choice is not None:
                     is_nvgemm = isinstance(ms_fused_choice, NVUniversalGemmCaller)
                     if is_nvgemm:
@@ -7686,7 +7694,14 @@ class Scheduler:
         # allowing gathers by allowing increasing write_bytes by small factor
         # TODO - make configurable per input, for instance, bias can fuse fp32 -> fp16 profitably
 
-        BYTES_THRESHOLD_MULTIPLIER = 1.1
+        # 1.1 is tuned for discrete GPUs, where a read the template would
+        # otherwise not make crosses PCIe-fed device memory. Apple silicon is
+        # unified: host and device share the same pool, so the cost curve for
+        # trading extra in-kernel reads against an extra kernel launch is not
+        # the same one. Kept equal until measured -- this is the seam to tune.
+        BYTES_THRESHOLD_MULTIPLIER = (
+            1.1 if prologue_node.get_device().type == "mps" else 1.1
+        )
         if read_bytes > (write_bytes * BYTES_THRESHOLD_MULTIPLIER):
             why("prologue fusion will not increase amount of bytes read in kernel")
             return False
