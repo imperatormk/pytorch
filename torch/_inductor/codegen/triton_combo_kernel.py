@@ -323,12 +323,32 @@ class ComboKernel(Kernel):
     """
 
     @staticmethod
+    def _max_num_args(device: torch.device | None = None) -> int:
+        """Argument budget for one combo kernel.
+
+        config.combo_kernel_max_num_args (250) reflects CUDA, which has no hard
+        cap. Metal binds at most 31 buffers per kernel, so on MPS a 250-arg
+        partition is unschedulable and the backend rejects it at codegen.
+
+        30, not 31: every tensor takes one binding, and the AppleGPU backend
+        packs all scalar arguments into a single extra `constant` buffer, so
+        one slot of the 31 is reserved whenever the kernel has any scalar.
+        """
+        limit = config.combo_kernel_max_num_args
+        if device is not None and device.type == "mps":
+            limit = min(limit, 30)
+        return limit
+
+    @staticmethod
     def _update_partition(
         partition_state: PartitionState,
         node_rw_count: int,
         node_info: BaseSchedulerNode,
     ) -> None:
-        if partition_state.cur_count + node_rw_count > config.combo_kernel_max_num_args:
+        max_args = ComboKernel._max_num_args(
+            getattr(node_info, "get_device", lambda: None)()
+        )
+        if partition_state.cur_count + node_rw_count > max_args:
             partition_state.partitions.append(partition_state.cur_partition)
             partition_state.cur_partition = [node_info]
             partition_state.cur_count = node_rw_count

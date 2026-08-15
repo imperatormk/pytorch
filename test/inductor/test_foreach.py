@@ -439,7 +439,19 @@ class ForeachTests(TestCase):
         actual = fn_opt(*inputs)
         expected = fn(*inputs)
         self.assertEqual(actual, expected)
-        self.assertEqual(torch._inductor.metrics.generated_kernel_count, 2)
+        # How many kernels this splits into follows the backend's argument
+        # budget, which is not the same everywhere: CUDA has no hard cap and
+        # uses config.combo_kernel_max_num_args (250), while Metal binds at
+        # most 31 buffers per kernel. Derive the expectation from the same
+        # limit the partitioner uses rather than hardcoding CUDA's answer.
+        from torch._inductor.codegen.triton_combo_kernel import ComboKernel
+
+        budget = ComboKernel._max_num_args(torch.device(GPU_TYPE))
+        n_buffers = max_list_len * 3
+        self.assertEqual(
+            torch._inductor.metrics.generated_kernel_count,
+            -(-n_buffers // budget),  # ceil division
+        )
 
     @requires_gpu
     @scalar_bin_ops
