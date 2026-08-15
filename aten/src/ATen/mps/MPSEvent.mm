@@ -227,7 +227,10 @@ void MPSEventPool::emptyCache() {
 
 id_t MPSEventPool::acquireEvent(bool enable_timing) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  MPSEventPtr event = acquireEvent(enable_timing, nullptr);
+  // An MPSEvent binds its stream when acquired, not when recorded, so bind the
+  // stream that is current now. Passing nullptr here would pin every event to
+  // the default stream and leave it unable to order work on a pool stream.
+  MPSEventPtr event = acquireEvent(enable_timing, getCurrentMPSStream());
   TORCH_INTERNAL_ASSERT(event);
   id_t event_id = event->getID();
   m_in_use_events.emplace(event_id, std::move(event));

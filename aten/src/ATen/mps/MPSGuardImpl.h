@@ -68,21 +68,31 @@ struct TORCH_API MPSGuardImpl final
   }
 
   Stream getStream(Device d) const override {
-    return Stream(Stream::DEFAULT, Device(c10::DeviceType::MPS, 0));
+    return getCurrentMPSStream()->unwrap();
   }
 
   Stream getNewStream(Device, int priority = 0) const override {
     (void)priority;
-    return Stream(Stream::DEFAULT, Device(c10::DeviceType::MPS, 0));
+    return getStreamFromPool()->unwrap();
   }
 
   Stream getDefaultStream(Device d) const override {
-    return Stream(Stream::DEFAULT, Device(c10::DeviceType::MPS, 0));
+    return getDefaultMPSStream()->unwrap();
   }
 
   // NB: These do NOT set the current device
   Stream exchangeStream(Stream s) const override {
-    return Stream(Stream::DEFAULT, Device(c10::DeviceType::MPS, 0));
+    auto old = getCurrentMPSStream()->unwrap();
+    setCurrentMPSStream(getStreamFromId(s.id()));
+    return old;
+  }
+
+  bool queryStream(const Stream& stream) const override {
+    return getStreamFromId(stream.id())->query();
+  }
+
+  void synchronizeStream(const Stream& stream) const override {
+    getStreamFromId(stream.id())->synchronize(SyncType::COMMIT_AND_WAIT);
   }
   DeviceCapability getDeviceCapability(Device /* unused */) const override {
     DeviceCapability cap;

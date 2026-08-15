@@ -145,6 +145,24 @@ void MPSStream::commit() {
   }
 }
 
+bool MPSStream::query() const {
+  // Uncommitted encoding is by definition outstanding work; a buffer that has
+  // been handed to Metal is only done once it reports Completed. Error is also
+  // terminal -- the work is no longer in flight -- and commitAndWait surfaces
+  // the failure through checkLastError().
+  auto finished = [](MPSCommandBuffer_t buffer) {
+    if (!buffer) {
+      return true;
+    }
+    auto status = [buffer status];
+    return status == MTLCommandBufferStatusCompleted || status == MTLCommandBufferStatusError;
+  };
+  if (_commandEncoder) {
+    return false;
+  }
+  return finished(_prevCommandBuffer) && finished(_commandBuffer);
+}
+
 void MPSStream::commitAndWait() {
   // A full GPU drain means no timed region can sensibly still be open; clear any
   // residual timing pin so an interrupted benchmark pair (e.g. an exception
@@ -380,6 +398,15 @@ void initStreamPool() {
 MPSStream* getStreamFromPool() {
   c10::call_once(stream_pool_flag, initStreamPool);
   return stream_pool[stream_pool_counter++ % kMPSStreamsPerPool];
+}
+
+MPSStream* getStreamFromId(c10::StreamId id) {
+  if (id == 0) {
+    return getDefaultMPSStream();
+  }
+  c10::call_once(stream_pool_flag, initStreamPool);
+  TORCH_CHECK(id >= 1 && id <= kMPSStreamsPerPool, "invalid MPS stream id ", id);
+  return stream_pool[id - 1];
 }
 
 void synchronizeAllMPSStreams(SyncType syncType) {

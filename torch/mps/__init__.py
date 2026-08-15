@@ -262,9 +262,15 @@ _init_default_generators()
 
 from . import profiler
 from .event import Event
+from .stream import current_stream, set_stream, Stream, stream, StreamContext
 
 
 __all__ = [
+    "Stream",
+    "StreamContext",
+    "current_stream",
+    "set_stream",
+    "stream",
     "compile_shader",
     "load_metallib",
     "device_count",

@@ -5,7 +5,12 @@ from .common import DeviceOpOverrides, register_device_op_overrides
 
 class MPSDeviceOpOverrides(DeviceOpOverrides):
     def import_get_raw_stream_as(self, name: str) -> str:
-        return f"{name} = lambda device_idx: None  # MPS has no raw stream"
+        # MPS kernels take the stream as an opaque token they never
+        # dereference, so the stream id stands in for a queue pointer.
+        return f"{name} = lambda device_idx: torch.mps.current_stream().stream_id"
+
+    def current_stream(self) -> str:
+        return "torch.mps.current_stream()"
 
     def device_guard(self, device_idx: int) -> str:
         if device_idx != 0:

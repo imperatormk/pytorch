@@ -599,7 +599,28 @@ class MpsInterface(DeviceInterface):
 
     @staticmethod
     def get_raw_stream(device_idx: int) -> int:
-        return 0
+        # There is no MTLCommandQueue pointer to hand out (THPMPSStream has no
+        # native_handle), and generated kernels take the stream as an opaque
+        # token they never dereference, so the stream id serves as the handle.
+        return torch.mps.current_stream().stream_id
+
+    @staticmethod
+    def current_stream() -> torch.Stream:
+        return torch.mps.current_stream()
+
+    @staticmethod
+    def set_stream(stream: torch.Stream) -> None:
+        torch.mps.set_stream(stream)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _set_stream_by_id(stream_id: int, device_index: int, device_type: int) -> None:
+        torch.accelerator.set_stream(
+            torch.Stream(
+                stream_id=stream_id,
+                device_index=device_index,
+                device_type=device_type,
+            )
+        )
 
     @staticmethod
     def synchronize(device: torch.types.Device = None) -> None:

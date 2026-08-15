@@ -78,6 +78,10 @@ class TORCH_API MPSStream {
   MTLComputeCommandEncoder_t commandEncoder();
   void endKernelCoalescing();
   void synchronize(SyncType syncType);
+
+  /// Returns true when every command buffer this stream has submitted has
+  /// finished, i.e. synchronize() would not block.
+  bool query() const;
   void copy(MTLBuffer_t srcBuffer,
             MTLBuffer_t dstBuffer,
             size_t length,
@@ -205,6 +209,13 @@ TORCH_API MPSStream* getDefaultMPSStream();
  * in round-robin order. Note: The default stream is not in the pool.
  */
 TORCH_API MPSStream* getStreamFromPool();
+
+/**
+ * Get the MPSStream carrying a given StreamId: 0 is the default stream, 1..32
+ * index the pool. Turns a c10::Stream that crossed an API boundary back into
+ * the stream it names, which is what MPSGuardImpl::exchangeStream needs.
+ */
+TORCH_API MPSStream* getStreamFromId(c10::StreamId id);
 
 /**
  * Synchronize the default stream and any pool streams created so far.

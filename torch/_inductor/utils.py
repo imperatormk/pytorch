@@ -3552,7 +3552,7 @@ def is_triton_fp8_dtype_supported(
 
 
 def device_need_guard(device: str) -> bool:
-    return device != "mps" and is_gpu(device)  # TODO: MPS does not expose streams now
+    return is_gpu(device)
 
 
 def needs_fallback_due_to_atomic_add_limitations(dtype: torch.dtype) -> bool:
