@@ -5,6 +5,7 @@ import random
 
 import torch
 from torch import nn
+from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.utils import same
 from torch._inductor import config
 from torch._inductor.test_case import run_tests, TestCase
@@ -51,6 +52,11 @@ class TestLayoutOptim(TestCase):
                     backend = "nccl"
                 elif GPU_TYPE == "xpu":
                     backend = "ccl"
+                else:
+                    # world_size=1, so nothing crosses ranks and the generic
+                    # backend suffices. Without this `backend` is unbound on any
+                    # other device and setUpClass raises, taking the whole class.
+                    backend = "gloo"
                 dist.init_process_group(
                     backend=backend,
                     init_method=f"tcp://localhost:{port}",
@@ -95,8 +101,18 @@ class TestLayoutOptim(TestCase):
         inp = [t.to(GPU_TYPE) for t in mod.get_example_inputs()]
         expected_out = wrap_mod(mod)(*inp)
 
-        fp64_mod = copy.deepcopy(mod).to(torch.float64)
-        fp64_inp = [t.to(torch.float64) for t in copy.deepcopy(inp)]
+        # fp64 is only the precision oracle for same()'s tolerance -- the
+        # comparison itself is expected_out vs actual_out in the model's own
+        # dtype. A device without fp64 can still supply the oracle from the CPU.
+        fp64_device = (
+            GPU_TYPE
+            if get_interface_for_device(GPU_TYPE).is_dtype_supported(torch.float64)
+            else "cpu"
+        )
+        fp64_mod = copy.deepcopy(mod).to(device=fp64_device, dtype=torch.float64)
+        fp64_inp = [
+            t.to(device=fp64_device, dtype=torch.float64) for t in copy.deepcopy(inp)
+        ]
         fp64_out = wrap_mod(fp64_mod)(*fp64_inp)
 
         if use_ddp_wrapper:
