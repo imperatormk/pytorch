@@ -3,11 +3,13 @@
 #pragma once
 
 #include <ATen/mps/MPSStream.h>
+#include <algorithm>
 #include <condition_variable>
 #include <ctime>
 #include <memory>
 #include <mutex>
 #include <stack>
+#include <vector>
 
 namespace at::mps {
 
@@ -50,6 +52,10 @@ class MPSEvent {
   // returns the unique ID of the event instance
   id_t getID() const {
     return m_id;
+  }
+  // returns the stream this event is bound to (set at acquire time)
+  MPSStream* stream() const {
+    return m_stream;
   }
   // returns the completion timestamp of the event
   uint64_t getCompletionTime() const {

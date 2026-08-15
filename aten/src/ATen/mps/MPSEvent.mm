@@ -25,10 +25,13 @@ void MPSEvent::recordLocked(bool syncEvent) {
   // commits triggered by the kernel's allocations between start and end cannot
   // split the command buffer); the matching end timing record closes it after
   // the end signal is encoded below. This guarantees the start and end events
-  // share one command buffer, so their GPU timestamps cannot invert.
-  bool openedTimedPair = false;
-  if (m_enable_timing) {
-    openedTimedPair = m_stream->openOrCloseTimedPair();
+  // share one command buffer, so their GPU timestamps cannot invert. A pair's two
+  // records are two different events, so the open/close state lives on the stream
+  // they share; keying off whether a region is already open -- rather than a
+  // toggle -- keeps overlapping pairs from mis-nesting.
+  const bool openedTimedPair = m_enable_timing && !m_stream->isTimingPinned();
+  if (openedTimedPair) {
+    m_stream->pinTiming();
   }
   ++m_signalCounter;
   id<MTLCommandBuffer> commandBuffer = m_stream->commandBuffer();
@@ -269,10 +272,25 @@ bool MPSEventPool::queryEvent(id_t event_id) {
 }
 
 double MPSEventPool::elapsedTime(id_t start_event_id, id_t end_event_id) {
-  // first make sure notifyListeners are called to capture events' completion times
-  dispatch_sync(m_default_stream->queue(), ^() {
-    m_default_stream->synchronize(SyncType::COMMIT_AND_WAIT);
-  });
+  // Drain the streams the events were actually recorded on, not just the default
+  // one: an event binds its stream at acquire time, so a pair recorded inside a
+  // non-default stream would otherwise never have its command buffer committed
+  // and waitForCpuSync() below would block forever.
+  std::vector<MPSStream*> streams;
+  {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    for (id_t id : {start_event_id, end_event_id}) {
+      MPSStream* stream = getInUseEvent(id, false)->stream();
+      if (std::find(streams.begin(), streams.end(), stream) == streams.end()) {
+        streams.push_back(stream);
+      }
+    }
+  }
+  for (MPSStream* stream : streams) {
+    dispatch_sync(stream->queue(), ^() {
+      stream->synchronize(SyncType::COMMIT_AND_WAIT);
+    });
+  }
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   MPSEvent* start_event = getInUseEvent(start_event_id, false);
   MPSEvent* end_event = getInUseEvent(end_event_id, false);

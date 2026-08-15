@@ -138,23 +138,10 @@ class TORCH_API MPSStream {
   bool isTimingPinned() const {
     return _timingPinned > 0;
   }
-  // Brackets a timed event pair. The first timing record opens the region and
-  // pins; this returns true. The second timing record returns false to signal
-  // the caller it must unpin (via unpinTiming()) AFTER the end signal is encoded
-  // onto the shared command buffer. Driven from MPSEvent::recordLocked.
-  bool openOrCloseTimedPair() {
-    _inTimedPair = !_inTimedPair;
-    if (_inTimedPair) {
-      pinTiming();
-      return true;
-    }
-    return false;
-  }
   // Clears any open timed region. Used as an exception-safety backstop on a full
   // GPU drain so an interrupted pair cannot leak commit suppression.
   void resetTimingPin() {
     _timingPinned = 0;
-    _inTimedPair = false;
   }
 
  private:
@@ -172,8 +159,6 @@ class TORCH_API MPSStream {
   // >0 while a timed region (start..end event pair) is open; suppresses
   // involuntary command buffer commits so the pair stays on one buffer.
   int _timingPinned = 0;
-  // false between pairs, true after a start timing record and before its end.
-  bool _inTimedPair = false;
   // Buffer that contains last raised error
   MTLBuffer_t _errorBuffer = nil;
 
