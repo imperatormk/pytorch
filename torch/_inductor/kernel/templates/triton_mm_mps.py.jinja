@@ -66,8 +66,7 @@
                      indent_width=8, index_shape=("BLOCK_K", "BLOCK_N"))}}
 
         {% if not EVEN_K and MPS_CLAMP_K %}
-        a = tl.where(k_in[None, :], a, 0)
-        b = tl.where(k_in[:, None], b, 0)
+        {{clamp_k_zero_tail("a", "b", indent_width=8)}}
         {% endif %}
 
         {% if USE_FAST_ACCUM %}

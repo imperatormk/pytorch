@@ -1420,6 +1420,52 @@ class TritonTemplateKernel(TritonKernel):
 
         return self._register_hook(hook_key, hook)
 
+    def clamp_k_zero_tail(
+        self, a_name: str, b_name: str, indent_width: int = 0
+    ) -> str:
+        """Zero the K tail for templates that clamp the K index instead of masking.
+
+        A clamped load reads ``K - 1`` repeatedly, so the tail lanes hold real
+        duplicated data rather than zeros. The dot contracts over K, so zeroing
+        *either* operand's tail is enough to kill those products -- emitting both
+        is redundant.
+
+        Which one is emitted matters for prologue fusion: a prologue is applied to
+        an operand before this point, so masking an operand whose prologue
+        preserves zero re-does work the prologue already guarantees. Prefer the
+        operand that is not zero-preserving; when both are, the tail is already
+        zero and no mask is emitted at all.
+
+        Only the final trip has a tail. ``k_rem`` is loop-variant, so the compiler
+        cannot prove the select is a no-op on the interior trips; the guard is a
+        threadgroup-uniform scalar branch, so it does not diverge.
+        """
+        hook_key = "<CLAMP_K_ZERO_TAIL>"
+        exprs = {
+            a_name: f"{a_name} = tl.where(k_in[None, :], {a_name}, 0)",
+            b_name: f"{b_name} = tl.where(k_in[:, None], {b_name}, 0)",
+        }
+        operands = [(a_name, "A"), (b_name, "B")]
+
+        def hook():
+            def preserves_zero(input_name: str) -> bool:
+                node = self.named_input_nodes[input_name]
+                name = node.get_name()
+                return (
+                    name in self.prologue_fused_inputs
+                    and name in self.prologue_fused_inputs_preserve_zero
+                )
+
+            unmasked = [v for v, inp in operands if not preserves_zero(inp)]
+            if not unmasked:
+                return ""
+            result = f"if k_rem < BLOCK_K:\n    {exprs[unmasked[0]]}"
+            if indent_width:
+                result = textwrap.indent(result, " " * indent_width)
+            return result.strip()
+
+        return self._register_hook(hook_key, hook)
+
     def _generate_index_from_tma_index(
         self,
         output_name: str,
@@ -1790,6 +1836,7 @@ class TritonTemplateKernel(TritonKernel):
                 self.stride,
                 self.store_output,
                 self.load_input,
+                self.clamp_k_zero_tail,
                 self.make_load,
                 self.modification,
                 self.gen_argdefs,
