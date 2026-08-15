@@ -535,6 +535,21 @@ class MpsInterface(DeviceInterface):
     # uses it eagerly, not through dynamo capture).
     Event = torch.mps.Event  # type: ignore[assignment]
 
+    # Without this the base DeviceInterface.is_triton_capable() returns False,
+    # and every raise_if_triton_unavailable() call reports "This device is not
+    # capable of supporting Triton" -- even though the inductor MPS backend
+    # compiles through Triton. Cuda/Mtia/Xpu/Cpu all override this; MPS did not.
+    @staticmethod
+    def is_triton_capable(device: torch.types.Device = None) -> bool:
+        return True
+
+    @staticmethod
+    def raise_if_triton_unavailable(device: torch.types.Device = None) -> None:
+        import triton.backends
+
+        if "apple" not in triton.backends.backends:
+            raise RuntimeError("triton not built with the 'apple' backend")
+
     # MPS is single-device, so selecting a device index is a no-op. The inductor
     # GEMM autotune benchmark path enters `device_interface.device(idx)` before
     # timing a Triton template; without this context manager it would inherit the
