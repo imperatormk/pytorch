@@ -17085,21 +17085,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             def fn(x):
                 return op(x)
 
-        ctx = (
-            contextlib.nullcontext()
-            if self.device != "mps"
-            or name
-            not in [
-                "airy_ai",
-                "laguerre_polynomial_l",
-                "legendre_polynomial_p",
-                "log_ndtr",
-                "ndtri",
-            ]
-            else self.assertRaises(NotImplementedError)
-        )
-        with ctx:
-            self.common(fn, args, check_lowp=check_lowp, atol=1e-4, rtol=1e-4)
+        self.common(fn, args, check_lowp=check_lowp, atol=1e-4, rtol=1e-4)
 
     # codegen test fails with no dynamic for loop in dynamic shape tests
     @expectedFailureCodegenDynamic
