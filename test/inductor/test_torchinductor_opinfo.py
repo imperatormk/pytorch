@@ -243,6 +243,27 @@ inductor_skips["xpu"] = {
 inductor_skips["xpu"]["nn.functional.linear"] = {f16}
 inductor_skips["xpu"]["masked.cumprod"] = {f16}
 
+# MPS has no float64 type at all, so an op whose OUTPUT is float64 by definition
+# cannot run there for any input dtype -- these fail uniformly across b8/f16/
+# f32/i32/i64, not just on the float64 sample.
+_mps_float64_output = {b8, f16, f32, f64, i32, i64}
+inductor_skips["mps"] = {
+    "double": _mps_float64_output,
+    "cdouble": _mps_float64_output,
+    "to": _mps_float64_output,
+    "float_power": _mps_float64_output,
+    "logspace": _mps_float64_output,
+    "logspace.tensor_overload": _mps_float64_output,
+    # Returns uninitialized memory, so only the metadata is meaningful; the
+    # value comparison this suite performs is not.
+    "empty": _mps_float64_output,
+    "empty_like": _mps_float64_output,
+    "empty_strided": _mps_float64_output,
+    "empty_permuted": _mps_float64_output,
+    "new_empty": _mps_float64_output,
+    "new_empty_strided": _mps_float64_output,
+}
+
 inductor_expected_failures_single_sample = defaultdict(dict)
 
 inductor_expected_failures_single_sample["cpu"] = {
@@ -319,6 +340,7 @@ if not functorch_config.view_replay_for_aliased_outputs:
 
 inductor_expected_failures_single_sample["cuda"].update(intentionally_not_handled)
 inductor_expected_failures_single_sample["xpu"].update(intentionally_not_handled)
+inductor_expected_failures_single_sample["mps"].update(intentionally_not_handled)
 
 
 inductor_gradient_expected_failures_single_sample = defaultdict(dict)
