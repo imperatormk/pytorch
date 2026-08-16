@@ -438,7 +438,13 @@ static void nonzero_impl_mps(const Tensor& self, Tensor& out_, std::optional<int
     // Dynamic path: sync to learn output size. total_nonzero is int64, so the
     // count reads back directly even when it exceeds INT_MAX.
     const int64_t total_nonzero = total_nonzero_buf.item<int64_t>();
-    at::native::resize_output(out_, {total_nonzero, nDim});
+    if (at::native::resize_output(out_, {total_nonzero, nDim})) {
+      // Match CPU and CUDA, which both hand back a fortran-contiguous result
+      // (see gh-46224). Returning a row-major one instead makes every consumer
+      // that was compiled against the documented strides -- inductor's
+      // assert_size_stride among them -- reject a numerically correct output.
+      out_.as_strided_({total_nonzero, nDim}, {1, total_nonzero});
+    }
     max_elements = total_nonzero;
   }
 

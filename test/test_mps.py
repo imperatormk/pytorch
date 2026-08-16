@@ -4259,6 +4259,19 @@ class TestMPS(TestCaseMPS):
         out_cpu = data.cpu().repeat_interleave(counts.cpu()[1:], dim=0)
         self.assertEqual(out_mps.cpu(), out_cpu)
 
+    def test_nonzero_matches_cpu_strides(self):
+        # nonzero is documented to return a fortran-contiguous result and both
+        # CPU and CUDA do (gh-46224). Returning a row-major one instead is
+        # numerically correct but breaks every consumer compiled against the
+        # documented strides -- inductor's assert_size_stride among them.
+        for shape in [(200, 2), (10, 10), (7, 3, 5), (64,)]:
+            cpu_x = torch.zeros(shape)
+            cpu_x.view(-1)[::3] = 1
+            cpu_out = torch.nonzero(cpu_x)
+            mps_out = torch.nonzero(cpu_x.to("mps"))
+            self.assertEqual(cpu_out, mps_out.cpu())
+            self.assertEqual(cpu_out.stride(), mps_out.stride(), f"stride mismatch for {shape}")
+
     def test_count_nonzero(self):
         def helper(dtype):
             n = [
