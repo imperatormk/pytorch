@@ -80,9 +80,6 @@ test_failures = {
     "test_index_propagation_to_dtype_inf_dynamic_shapes": TestFailure(
         ("cpu",), is_skip=True
     ),
-    "test_reflection_pad2d_backward_dynamic_shapes": TestFailure(
-        ("mps",), is_skip=True
-    ),
 }
 
 if any(os.getenv("BUILD_ENVIRONMENT", "").endswith(x) for x in ("-debug", "-asan")):
