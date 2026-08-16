@@ -3170,6 +3170,9 @@ def forward(self, arg0_1, arg1_1):
     @requires_gpu
     @parametrize("dtype", (torch.float16, torch.float32, torch.float64))
     def test_triton_kernel_float64_constant(self, dtype):
+        if GPU_TYPE == "mps" and dtype == torch.float64:
+            raise unittest.SkipTest("MPS has no float64")
+
         def f(x):
             return x * (0.12 * x.shape[0])
 

@@ -251,6 +251,9 @@ class TestSelectAlgorithm(TestCase):
 
     @patches
     def test_mm_skip(self):
+        if GPU_TYPE == "mps":
+            raise unittest.SkipTest("MPS has no float64")
+
         @torch.compile
         def foo(a, b):
             return torch.mm(a, b)

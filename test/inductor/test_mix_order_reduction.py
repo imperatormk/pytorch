@@ -583,13 +583,14 @@ class MixOrderReductionTest(TestBase):
         ref = f(xs, w, eps)
 
         # use float64 to compute ref_grads for precision
-        # and cast back to original dtype
-        xs_f64 = [x.to(torch.float64) for x in xs]
-        w_f64 = w.to(torch.float64)
-        dys_f64 = [dy.to(torch.float64) for dy in dys]
+        # and cast back to original dtype. MPS has no float64, so the reference
+        # is computed on the CPU there.
+        xs_f64 = [x.cpu().to(torch.float64).requires_grad_() for x in xs]
+        w_f64 = w.cpu().to(torch.float64).requires_grad_()
+        dys_f64 = [dy.cpu().to(torch.float64) for dy in dys]
         ref_f64 = f(xs_f64, w_f64, eps)
         ref_grads_f64 = torch.autograd.grad(ref_f64, [*xs_f64, w_f64], dys_f64)
-        ref_grads = [g.to(dtype) for g in ref_grads_f64]
+        ref_grads = [g.to(device=w.device, dtype=dtype) for g in ref_grads_f64]
 
         act = torch.compile(
             f,

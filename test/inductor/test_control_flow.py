@@ -653,6 +653,9 @@ class CondTests(TestCase):
     @parametrize("device", ["cpu", GPU_TYPE])
     @parametrize("dynamic", [False, True])
     def test_cond_subgraphs_with_parameters(self, device, dynamic):
+        # the nested Modules are float64, which MPS does not support
+        if device == "mps":
+            raise unittest.SkipTest("MPS has no float64")
         # nested Modules with parameters
         self._run_test(
             model=CondModels.Parameters(device),
@@ -1437,6 +1440,8 @@ class WhileLoopTests(TestCase):
     @parametrize("autograd", [False, True])
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     def test_while_loop_with_parameters(self, device, dynamic, autograd):
+        if device == "mps":
+            raise unittest.SkipTest("MPS has no float64")
         # while_loop control flow with parameters
         self._run_test(
             model=WhileLoopModels.Parameters(device),
@@ -1659,6 +1664,8 @@ class WhileLoopTests(TestCase):
     @parametrize("autograd", [False, True])
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     def test_while_loop_with_conv(self, device, dynamic, autograd):
+        if device == "mps":
+            raise unittest.SkipTest("MPS has no float64")
         self._run_test(
             model=WhileLoopModels.Conv(device),
             inputs=(torch.randn(2, 4, 4, 4, dtype=torch.float64),),
@@ -2157,6 +2164,8 @@ class ScanTests(TestCase):
     def test_scan_nn_modules(
         self, device, dynamic, reverse, dim, scan_length, autograd
     ):
+        if device == "mps":
+            raise unittest.SkipTest("MPS has no float64")
         init = torch.randn(20, 16, 4, 4, dtype=torch.float64)
         xs = torch.randn(scan_length, 20, 16, 4, 4, dtype=torch.float64)
         xs = xs.movedim(0, dim)
@@ -2180,6 +2189,8 @@ class ScanTests(TestCase):
     @parametrize("autograd", [True, False])
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     def test_scan_conv(self, device, dynamic, reverse, dim, scan_length, autograd):
+        if device == "mps":
+            raise unittest.SkipTest("MPS has no float64")
         init = torch.randn(2, 4, 4, 4, dtype=torch.float64)
         xs = torch.randn(scan_length, 2, 4, 4, 4, dtype=torch.float64)
         xs = xs.movedim(0, dim)

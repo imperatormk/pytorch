@@ -1929,9 +1929,12 @@ class ComboKernelTestsPerSubkernelBlocks(ComboKernelTests):
         def fn(x, y):
             return x + 1, y + 1
 
+        # Any second dtype forces the distinct signature this checks; MPS has no
+        # float64.
+        other_dtype = torch.float16 if GPU_TYPE == "mps" else torch.float64
         inps = (
             torch.rand(8192, device=GPU_TYPE, dtype=torch.float32),
-            torch.rand(8192, device=GPU_TYPE, dtype=torch.float64),
+            torch.rand(8192, device=GPU_TYPE, dtype=other_dtype),
         )
 
         out, code = run_and_get_code(torch.compile(fn), *inps)

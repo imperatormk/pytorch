@@ -882,6 +882,9 @@ class TestPatternMatcher(TestCase):
     def test_pointless_convert(
         self, input_dtype, intermediate_dtype, emulate_precision_casts, expected_calls
     ):
+        if GPU_TYPE == "mps" and torch.float64 in (input_dtype, intermediate_dtype):
+            raise unittest.SkipTest("MPS has no float64")
+
         def fn(x):
             x = torch.ops.prims.convert_element_type.default(x, intermediate_dtype)
             x = torch.ops.prims.convert_element_type.default(x, input_dtype)

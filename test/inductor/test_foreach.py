@@ -1101,6 +1101,7 @@ class ForeachTests(TestCase):
                 _ = run_fw_bw_and_get_code(lambda: torch.compile(fn)(*inps))
 
     @requires_gpu
+    @unittest.skipIf(GPU_TYPE == "mps", "MPS has no float64")
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     @torch._inductor.config.patch("_use_fp64_for_unbacked_floats", True)
     @parametrize(
@@ -1179,6 +1180,7 @@ class ForeachTests(TestCase):
             self.assertEqual(a, b, atol=0, rtol=0)
 
     @requires_gpu
+    @unittest.skipIf(GPU_TYPE == "mps", "MPS has no float64")
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     @parametrize(
         "op",
