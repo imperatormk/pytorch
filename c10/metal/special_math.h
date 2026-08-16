@@ -3125,5 +3125,276 @@ float erfcx(T x) {
   }
 }
 
+inline float polevl(float x, thread const float* coef, int len) {
+  float ans = coef[0];
+  for (int i = 1; i <= len; ++i) {
+    ans = ans * x + coef[i];
+  }
+  return ans;
+}
+
+// Cephes ndtri. The CPU reference evaluates this in double; Metal has no
+// float64, so the rational approximations run in float and the result carries
+// float-level accuracy.
+template <typename T>
+inline float ndtri(T y0) {
+  const float P0[5] = {
+      -5.99633501014107895267E1f,
+      9.80010754185999661536E1f,
+      -5.66762857469070293439E1f,
+      1.39312609387279679503E1f,
+      -1.23916583867381258016E0f};
+  const float Q0[9] = {
+      1.00000000000000000000E0f,
+      1.95448858338141759834E0f,
+      4.67627912898881538453E0f,
+      8.63602421390890590575E1f,
+      -2.25462687854119370527E2f,
+      2.00260212380060660359E2f,
+      -8.20372256168333339912E1f,
+      1.59056225126211695515E1f,
+      -1.18331621121330003142E0f};
+  const float P1[9] = {
+      4.05544892305962419923E0f,
+      3.15251094599893866154E1f,
+      5.71628192246421288162E1f,
+      4.40805073893200834700E1f,
+      1.46849561928858024014E1f,
+      2.18663306850790267539E0f,
+      -1.40256079171354495875E-1f,
+      -3.50424626827848203418E-2f,
+      -8.57456785154685413611E-4f};
+  const float Q1[9] = {
+      1.00000000000000000000E0f,
+      1.57799883256466749731E1f,
+      4.53907635128879210584E1f,
+      4.13172038254672030440E1f,
+      1.50425385692907503408E1f,
+      2.50464946208309415979E0f,
+      -1.42182922854787788574E-1f,
+      -3.80806407691578277194E-2f,
+      -9.33259480895457427372E-4f};
+  const float P2[9] = {
+      3.23774891776946035970E0f,
+      6.91522889068984211695E0f,
+      3.93881025292474443415E0f,
+      1.33303460815807542389E0f,
+      2.01485389549179081538E-1f,
+      1.23716634817820021358E-2f,
+      3.01581553508235416007E-4f,
+      2.65806974686737550832E-6f,
+      6.23974539184983293730E-9f};
+  const float Q2[9] = {
+      1.00000000000000000000E0f,
+      6.02427039364742014255E0f,
+      3.67983563856160859403E0f,
+      1.37702099489081330271E0f,
+      2.16236993594496635890E-1f,
+      1.34204006088543189037E-2f,
+      3.28014464682127739104E-4f,
+      2.89247864745380683936E-6f,
+      6.79019408009981274425E-9f};
+
+  const float yf = static_cast<float>(y0);
+  if (yf == 0.0f) {
+    return -::metal::numeric_limits<float>::infinity();
+  }
+  if (yf == 1.0f) {
+    return ::metal::numeric_limits<float>::infinity();
+  }
+  if (yf < 0.0f || yf > 1.0f || yf != yf) {
+    return ::metal::numeric_limits<float>::quiet_NaN();
+  }
+
+  constexpr float s2pi = 2.50662827463100050242E0f;
+  constexpr float exp_m2 = 0.13533528323661269189f;
+
+  bool code = true;
+  float y = yf;
+  if (y > 1.0f - exp_m2) {
+    y = 1.0f - y;
+    code = false;
+  }
+  if (y > exp_m2) {
+    y = y - 0.5f;
+    const float y2 = y * y;
+    const float x = y + y * (y2 * polevl(y2, P0, 4) / polevl(y2, Q0, 8));
+    return x * s2pi;
+  }
+
+  float x = ::metal::precise::sqrt(-2.0f * ::metal::precise::log(y));
+  const float x0 = x - ::metal::precise::log(x) / x;
+  const float z = 1.0f / x;
+  const float x1 = x < 8.0f ? z * polevl(z, P1, 8) / polevl(z, Q1, 8)
+                            : z * polevl(z, P2, 8) / polevl(z, Q2, 8);
+  x = x0 - x1;
+  return code ? -x : x;
+}
+
+// Cephes airy_ai, transcribed from the CPU reference. Evaluated in float since
+// Metal has no float64.
+template <typename T>
+inline float airy_ai_forward(T x_in) {
+  const float AN[8] = {
+      +3.46538101525629032477e-01f,
+      +1.20075952739645805542e+01f,
+      +7.62796053615234516538e+01f,
+      +1.68089224934630576269e+02f,
+      +1.59756391350164413639e+02f,
+      +7.05360906840444183113e+01f,
+      +1.40264691163389668864e+01f,
+      +9.99999999999999995305e-01f};
+  const float AD[8] = {
+      +5.67594532638770212846e-01f,
+      +1.47562562584847203173e+01f,
+      +8.45138970141474626562e+01f,
+      +1.77318088145400459522e+02f,
+      +1.64234692871529701831e+02f,
+      +7.14778400825575695274e+01f,
+      +1.40959135607834029598e+01f,
+      +1.00000000000000000470e+00f};
+  const float AFN[9] = {
+      -1.31696323418331795333e-01f,
+      -6.26456544431912369773e-01f,
+      -6.93158036036933542233e-01f,
+      -2.79779981545119124951e-01f,
+      -4.91900132609500318020e-02f,
+      -4.06265923594885404393e-03f,
+      -1.59276496239262096340e-04f,
+      -2.77649108155232920844e-06f,
+      -1.67787698489114633780e-08f};
+  const float AFD[9] = {
+      +1.33560420706553243746e+01f,
+      +3.26825032795224613948e+01f,
+      +2.67367040941499554804e+01f,
+      +9.18707402907259625840e+00f,
+      +1.47529146771666414581e+00f,
+      +1.15687173795188044134e-01f,
+      +4.40291641615211203805e-03f,
+      +7.54720348287414296618e-05f,
+      +4.51850092970580378464e-07f};
+  const float AGN[11] = {
+      +1.97339932091685679179e-02f,
+      +3.91103029615688277255e-01f,
+      +1.06579897599595591108e+00f,
+      +9.39169229816650230044e-01f,
+      +3.51465656105547619242e-01f,
+      +6.33888919628925490927e-02f,
+      +5.85804113048388458567e-03f,
+      +2.82851600836737019778e-04f,
+      +6.98793669997260967291e-06f,
+      +8.11789239554389293311e-08f,
+      +3.41551784765923618484e-10f};
+  const float AGD[10] = {
+      +9.30892908077441974853e+00f,
+      +1.98352928718312140417e+01f,
+      +1.55646628932864612953e+01f,
+      +5.47686069422975497931e+00f,
+      +9.54293611618961883998e-01f,
+      +8.64580826352392193095e-02f,
+      +4.12656523824222607191e-03f,
+      +1.01259085116509135510e-04f,
+      +1.17166733214413521882e-06f,
+      +4.91834570062930015649e-09f};
+
+  const float x = static_cast<float>(x_in);
+  if (::metal::isnan(x)) {
+    return x;
+  }
+  if (::metal::isinf(x)) {
+    return ::metal::numeric_limits<float>::quiet_NaN();
+  }
+  if (x > 103.892f) {
+    return 0.0f;
+  }
+
+  int domain_flag = 0;
+  float ai = 0.0f;
+
+  if (x < -2.09f) {
+    const float z = 1.0f / (-2.0f * x * ::metal::precise::sqrt(-x) / 3.0f);
+    const float z2 = z * z;
+    float afn = 0.0f;
+    for (int i = 0; i <= 8; ++i) {
+      afn = afn * z2 + AFN[i];
+    }
+    float afd = 0.0f;
+    for (int i = 0; i <= 8; ++i) {
+      afd = afd * z2 + AFD[i];
+    }
+    float agn = 0.0f;
+    for (int i = 0; i <= 10; ++i) {
+      agn = agn * z2 + AGN[i];
+    }
+    float agd = 0.0f;
+    for (int i = 0; i <= 9; ++i) {
+      agd = agd * z2 + AGD[i];
+    }
+    const float t =
+        -2.0f * x * ::metal::precise::sqrt(-x) / 3.0f + 0.25f * M_PI_F;
+    return 5.64189583547756286948e-01f /
+        ::metal::precise::sqrt(::metal::precise::sqrt(-x)) *
+        (::metal::precise::sin(t) * (1.0f + z2 * afn / afd) -
+         ::metal::precise::cos(t) * (z * agn / agd));
+  }
+
+  if (x >= 2.09f) {
+    domain_flag = 5;
+    const float zeta = 2.0f * x * ::metal::precise::sqrt(x) / 3.0f;
+    const float rz = 1.0f / zeta;
+    float an = 0.0f;
+    for (int i = 0; i <= 7; ++i) {
+      an = an * rz + AN[i];
+    }
+    float ad = 0.0f;
+    for (int i = 0; i <= 7; ++i) {
+      ad = ad * rz + AD[i];
+    }
+    ai = 5.64189583547756286948e-01f * (an / ad) /
+        (2.0f * ::metal::precise::sqrt(::metal::precise::sqrt(x)) *
+         ::metal::precise::exp(zeta));
+    if (x > 8.3203353f) {
+      return ai;
+    }
+  }
+
+  float f = 1.0f;
+  float g = x;
+  float k = 1.0f;
+  float m = 1.0f;
+  float n = x;
+  float t = 1.0f;
+  const float z = x * x * x;
+
+  while (t > ::metal::numeric_limits<float>::epsilon()) {
+    m *= z;
+    k += 1.0f;
+    m /= k;
+    n *= z;
+    k += 1.0f;
+    n /= k;
+    m /= k;
+    f += m;
+    k += 1.0f;
+    n /= k;
+    g += n;
+    t = ::metal::abs(m / f);
+  }
+
+  if ((domain_flag & 1) == 0) {
+    return 0.355028053887817239260f * f - 0.258819403792806798405f * g;
+  }
+  return ai;
+}
+
+template <typename T>
+inline float log_ndtr(T x) {
+  const auto t = static_cast<float>(x) * 0.707106781186547524401f;
+  if (static_cast<float>(x) < -1.0f) {
+    return ::metal::precise::log(erfcx(-t) / 2) - t * t;
+  }
+  return ::c10::metal::log1p(-erfc(t) / 2);
+}
+
 } // namespace metal
 } // namespace c10

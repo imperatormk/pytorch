@@ -4242,6 +4242,7 @@
   variants: function, method
   dispatch:
     CPU, CUDA, XPU: mode
+    MPS: mode_mps
 
 - func: mode.values(Tensor self, int dim=-1, bool keepdim=False, *, Tensor(a!) values, Tensor(b!) indices) -> (Tensor(a!) values, Tensor(b!) indices)
   dispatch:
@@ -4543,6 +4544,7 @@
 - func: _pdist_forward(Tensor self, float p=2) -> Tensor
   dispatch:
     CPU, CUDA, XPU: _pdist_forward
+    MPS: _pdist_forward_mps
   autogen: _pdist_forward.out
   tags: core
 
@@ -6861,7 +6863,7 @@
 
 - func: frexp.Tensor_out(Tensor self, *, Tensor(a!) mantissa, Tensor(b!) exponent) -> (Tensor(a!) mantissa, Tensor(b!) exponent)
   dispatch:
-    CPU, CUDA, XPU: frexp_out
+    CPU, CUDA, MPS, XPU: frexp_out
   tags: pointwise
 
 # Deprecated (v.1.12)
@@ -7005,7 +7007,7 @@
   structured_inherits: TensorIteratorBase
   device_check: NoCheck   # TensorIterator
   dispatch:
-    CPU, CUDA, XPU: heaviside_out
+    CPU, CUDA, MPS, XPU: heaviside_out
   tags: pointwise
 
 - func: heaviside(Tensor self, Tensor values) -> Tensor
@@ -8208,6 +8210,7 @@
   variants: method
   dispatch:
     CPU, CUDA, XPU: put_
+    MPS: put_mps
   autogen: put.out
 
 - func: put(Tensor self, Tensor index, Tensor source, bool accumulate=False) -> Tensor
@@ -9265,6 +9268,7 @@
   variants: method, function
   dispatch:
     CPU, CUDA, XPU: take
+    MPS: take_mps
 
 - func: take_along_dim.out(Tensor self, Tensor indices, int? dim=None, *, Tensor(a!) out) -> Tensor(a!)
 
@@ -13602,7 +13606,7 @@
   python_module: special
   variants: function
   dispatch:
-    CPU, CUDA, XPU: special_ndtri_out
+    CPU, CUDA, MPS, XPU: special_ndtri_out
   tags: pointwise
 
 - func: special_log_ndtr(Tensor self) -> Tensor
@@ -13617,7 +13621,7 @@
   python_module: special
   variants: function
   dispatch:
-    CPU, CUDA, XPU: special_log_ndtr_out
+    CPU, CUDA, MPS, XPU: special_log_ndtr_out
   tags: pointwise
 
 - func: special_expm1(Tensor self) -> Tensor
@@ -15393,7 +15397,7 @@
 
 - func: special_airy_ai.out(Tensor x, *, Tensor(a!) out) -> Tensor(a!)
   dispatch:
-    CPU, CUDA, XPU: special_airy_ai_out
+    CPU, CUDA, MPS, XPU: special_airy_ai_out
   python_module: special
   structured_inherits: TensorIteratorBase
   structured: True

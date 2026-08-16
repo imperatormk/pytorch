@@ -54,6 +54,61 @@ static void erfcx_kernel(TensorIteratorBase& iter) {
   lib.exec_unary_kernel(iter, "erfcx");
 }
 
+static void special_log_ndtr_kernel(TensorIteratorBase& iter) {
+  lib.exec_unary_kernel(iter, "log_ndtr");
+}
+
+static void special_ndtri_kernel(TensorIteratorBase& iter) {
+  lib.exec_unary_kernel(iter, "ndtri");
+}
+
+static void special_airy_ai_kernel(TensorIteratorBase& iter) {
+  lib.exec_unary_kernel(iter, "airy_ai_forward");
+}
+
+// frexp writes both outputs from one pass; the shared unary helper is
+// single-output, so this drives its own kernel over the two-output iterator.
+static void frexp_kernel(TensorIteratorBase& iter) {
+  if (!iter.can_use_32bit_indexing()) {
+    for (auto&& sub_iter : iter.with_32bit_indexing()) {
+      frexp_kernel(sub_iter);
+    }
+    return;
+  }
+  const uint32_t length = iter.numel();
+  if (length == 0) {
+    return;
+  }
+
+  const auto kernel_name = fmt::format("frexp_{}_{}",
+                                       iter.is_contiguous() ? "dense" : "strided",
+                                       mps::scalarToMetalTypeString(iter.input(0)));
+  @autoreleasepool {
+    auto cplState = lib.getPipelineStateForFunc(kernel_name);
+    MPSStream* mpsStream = getCurrentMPSStream();
+    dispatch_sync(mpsStream->queue(), ^() {
+      auto computeEncoder = mpsStream->commandEncoder();
+      getMPSProfiler().beginProfileKernel(cplState, kernel_name, {iter.input(0)});
+      [computeEncoder setComputePipelineState:cplState];
+      mps::bind_iter_tensors(computeEncoder, iter);
+      if (iter.is_contiguous()) {
+        mps::mtl_dispatch1DJob(computeEncoder, cplState, length);
+      } else {
+        mps::mtl_setArgs<3>(computeEncoder,
+                       iter.shape(),
+                       iter.strides(0),
+                       iter.strides(1),
+                       iter.strides(2),
+                       static_cast<uint32_t>(iter.ndim()));
+        const auto inner = static_cast<NSUInteger>(iter.shape()[0]);
+        const auto outer = static_cast<NSUInteger>(length) / inner;
+        mps::mtl_dispatch2DJob(computeEncoder, cplState, inner, outer);
+      }
+      getMPSProfiler().endProfileKernel(cplState);
+    });
+  }
+}
+
 static void logical_not_kernel(TensorIteratorBase& iter) {
   lib.exec_unary_kernel(iter, "logical_not", std::nullopt, std::nullopt, /*ilp_threshold=*/1u << 18);
 }
@@ -131,6 +186,10 @@ REGISTER_UNARY_TI_DISPATCH(round);
 REGISTER_UNARY_TI_DISPATCH(sigmoid);
 REGISTER_DISPATCH(logical_not_stub, logical_not_kernel);
 REGISTER_DISPATCH(special_erfcx_stub, erfcx_kernel);
+REGISTER_DISPATCH(special_log_ndtr_stub, special_log_ndtr_kernel);
+REGISTER_DISPATCH(special_ndtri_stub, special_ndtri_kernel);
+REGISTER_DISPATCH(special_airy_ai_stub, special_airy_ai_kernel);
+REGISTER_DISPATCH(frexp_stub, frexp_kernel);
 REGISTER_DISPATCH(round_decimals_stub, round_decimals_kernel);
 REGISTER_DISPATCH(pow_tensor_scalar_stub, pow_tensor_scalar_kernel);
 REGISTER_DISPATCH(polygamma_stub, polygamma_kernel);

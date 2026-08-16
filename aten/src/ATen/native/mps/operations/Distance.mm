@@ -7,8 +7,13 @@
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 #else
+#include <ATen/ops/_pdist_forward_native.h>
+#include <ATen/ops/cdist.h>
+#include <ATen/ops/empty.h>
 #include <ATen/ops/linalg_vector_norm.h>
+#include <ATen/ops/triu_indices.h>
 #include <ATen/ops/where.h>
+#include <ATen/ops/zeros.h>
 #endif
 
 #include <ATen/native/mps/kernels/Distance.h>
@@ -105,6 +110,28 @@ static void cdist_backward_kernel_mps(Tensor& result,
       }
     });
   }
+}
+
+Tensor _pdist_forward_mps(const Tensor& self, const double p) {
+  TORCH_CHECK(self.is_contiguous(), "_pdist_forward requires contiguous input");
+  TORCH_CHECK(self.dim() == 2, "pdist only supports 2D tensors, got: ", self.dim(), "D");
+  TORCH_CHECK(at::isFloatingType(self.scalar_type()), "pdist only supports floating-point dtypes");
+  TORCH_CHECK(p >= 0, "pdist only supports non-negative p values");
+
+  const int64_t n = self.size(0);
+  if (n <= 1) {
+    return at::empty({0}, self.options(), LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+  }
+  const int64_t c = n * (n - 1) / 2;
+  if (self.size(1) == 0) {
+    return at::zeros({c}, self.options());
+  }
+
+  // compute_mode 2 forces the direct kernel; the mm-based euclidean path is
+  // less accurate and pdist is compared against the direct CPU result.
+  const Tensor full = at::cdist(self, self, p, 2);
+  const Tensor idx = at::triu_indices(n, n, 1, self.options().dtype(at::kLong));
+  return full.index({idx[0], idx[1]}).contiguous();
 }
 
 REGISTER_DISPATCH(cdist_stub, &cdist_kernel_mps)

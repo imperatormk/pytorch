@@ -29,7 +29,9 @@
 #include <ATen/NativeFunctions.h>
 #else
 #include <ATen/native/IndexKernel.h>
+#include <ATen/ops/add.h>
 #include <ATen/ops/flip_native.h>
+#include <ATen/ops/lt.h>
 #include <ATen/ops/index.h>
 #include <ATen/ops/index_add_native.h>
 #include <ATen/ops/index_copy_native.h>
@@ -38,11 +40,15 @@
 #include <ATen/ops/index_select_native.h>
 #include <ATen/ops/masked_fill_native.h>
 #include <ATen/ops/masked_scatter_native.h>
+#include <ATen/ops/empty.h>
 #include <ATen/ops/masked_select_native.h>
 #include <ATen/ops/nonzero.h>
 #include <ATen/ops/nonzero_native.h>
 #include <ATen/ops/nonzero_static_native.h>
 #include <ATen/ops/ones_like.h>
+#include <ATen/ops/put_native.h>
+#include <ATen/ops/take_native.h>
+#include <ATen/ops/where.h>
 #endif
 
 namespace at::native {
@@ -1242,6 +1248,57 @@ static void index_fill_mps_kernel(TensorIterator& iter,
       }
     });
   }
+}
+
+// Flat gather/scatter over the contiguous view of self. Negative indices wrap
+// once, matching the CPU bounds check.
+static Tensor wrap_flat_index(const Tensor& index, int64_t numel, const char* name) {
+  const Tensor flat = index.reshape(-1).to(at::kLong);
+  if (flat.numel() > 0) {
+    const int64_t lo = flat.min().item<int64_t>();
+    const int64_t hi = flat.max().item<int64_t>();
+    TORCH_CHECK(lo >= -numel && hi < numel,
+                name,
+                "(): out of range: tried to access index outside of tensor with ",
+                numel,
+                " elements");
+  }
+  return at::where(at::lt(flat, 0), at::add(flat, numel), flat);
+}
+
+Tensor take_mps(const Tensor& self, const Tensor& index) {
+  TORCH_CHECK(index.scalar_type() == at::kLong || index.scalar_type() == at::kInt,
+              "take(): Expected a long tensor for index, but got ",
+              index.scalar_type());
+  Tensor out = at::empty(index.sizes(), self.options());
+  if (index.numel() == 0) {
+    return out;
+  }
+  const Tensor idx = wrap_flat_index(index, self.numel(), "take");
+  return self.contiguous().reshape(-1).index_select(0, idx).reshape(index.sizes());
+}
+
+Tensor& put_mps(Tensor& self, const Tensor& index, const Tensor& source, const bool accumulate) {
+  TORCH_CHECK(index.numel() == source.numel(),
+              "put_(): Expected source and index to have the same number of elements, but got ",
+              source.numel(),
+              " and ",
+              index.numel());
+  if (index.numel() == 0) {
+    return self;
+  }
+  const Tensor idx = wrap_flat_index(index, self.numel(), "put_");
+  const Tensor src = source.reshape(-1).to(self.scalar_type());
+
+  if (self.is_contiguous()) {
+    Tensor flat = self.view(-1);
+    flat.index_put_({idx}, src, accumulate);
+    return self;
+  }
+  Tensor flat = self.contiguous().view(-1);
+  flat.index_put_({idx}, src, accumulate);
+  self.copy_(flat.view(self.sizes()));
+  return self;
 }
 
 REGISTER_DISPATCH(index_stub, &mps::index_kernel_mps)

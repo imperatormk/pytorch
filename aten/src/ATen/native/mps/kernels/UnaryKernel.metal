@@ -637,11 +637,102 @@ struct round_functor {
   }
 };
 
+// .first carries the mantissa (as T), .second the exponent.
+template <typename T>
+inline ::c10::metal::pair<T, int> frexp_split(const T x) {
+  const float xf = float(x);
+  if (!::metal::isfinite(xf)) {
+    return {x, 0};
+  }
+
+  // Apple GPUs flush subnormals to zero, so metal::frexp returns (0, 0) for
+  // them and any arithmetic to rescale them loses the value before it is
+  // read. Normalise via the stored bit pattern instead, which FTZ does not
+  // touch. bf16 shares fp32's exponent range so its subnormals land here
+  // too; fp16 subnormals become normal floats and take the path below.
+  // Testing for zero must be bit-based as well: `xf == 0.0f` flushes its
+  // own operand, so a subnormal compares equal to zero and never arrives.
+  const uint bits = as_type<uint>(xf);
+  const uint mag = bits & 0x7FFFFFFFu;
+  if (mag == 0u) {
+    return {x, 0};
+  }
+  if (mag < 0x00800000u) {
+    // mag is the raw 23-bit significand; value == mag * 2^-149. With
+    // L = 32 - clz(mag) the leading set bit gives mantissa = mag / 2^L in
+    // [0.5, 1) and exponent = L - 149.
+    const uint lz = static_cast<uint>(::metal::clz(mag));
+    const uint frac = (mag << (lz - 8u)) & 0x007FFFFFu;
+    const uint sign = bits & 0x80000000u;
+    const float m = as_type<float>(sign | (126u << 23) | frac);
+    return {static_cast<T>(m), -117 - static_cast<int>(lz)};
+  }
+
+  int e;
+  const T m = static_cast<T>(::metal::frexp(xf, e));
+  return {m, e};
+}
+
+template <typename T>
+kernel void frexp_dense(
+    device T* mantissa [[buffer(0)]],
+    device int* exponent [[buffer(1)]],
+    constant T* input [[buffer(2)]],
+    uint index [[thread_position_in_grid]]) {
+  const auto r = frexp_split(input[index]);
+  mantissa[index] = r.first;
+  exponent[index] = r.second;
+}
+
+template <typename T>
+kernel void frexp_strided(
+    device T* mantissa [[buffer(0)]],
+    device int* exponent [[buffer(1)]],
+    constant T* input [[buffer(2)]],
+    constant long* sizes [[buffer(3)]],
+    constant long* mantissa_strides [[buffer(4)]],
+    constant long* exponent_strides [[buffer(5)]],
+    constant long* input_strides [[buffer(6)]],
+    constant uint& ndim [[buffer(7)]],
+    uint2 thread_pos [[thread_position_in_grid]]) {
+  long pos[c10::metal::max_ndim];
+  pos_from_thread_index(thread_pos, pos, sizes, ndim);
+  const auto m_offs = offset_from_coord(pos, mantissa_strides, ndim) / sizeof(T);
+  const auto e_offs = offset_from_coord(pos, exponent_strides, ndim) / sizeof(int);
+  const auto i_offs = offset_from_coord(pos, input_strides, ndim) / sizeof(T);
+  const auto r = frexp_split(input[i_offs]);
+  mantissa[m_offs] = r.first;
+  exponent[e_offs] = r.second;
+}
+
+#define REGISTER_FREXP_OP(DTYPE)                                        \
+  template [[host_name("frexp_dense_" #DTYPE)]] kernel void             \
+  frexp_dense<DTYPE>(                                                   \
+      device DTYPE*, device int*, constant DTYPE*, uint);               \
+  template [[host_name("frexp_strided_" #DTYPE)]] kernel void           \
+  frexp_strided<DTYPE>(                                                 \
+      device DTYPE*,                                                    \
+      device int*,                                                      \
+      constant DTYPE*,                                                  \
+      constant long*,                                                   \
+      constant long*,                                                   \
+      constant long*,                                                   \
+      constant long*,                                                   \
+      constant uint&,                                                   \
+      uint2)
+
+REGISTER_FREXP_OP(float);
+REGISTER_FREXP_OP(half);
+REGISTER_FREXP_OP(bfloat);
+
 DEFINE_UNARY_FLOATING_FUNCTOR(erf);
 DEFINE_UNARY_FLOATING_FUNCTOR(erfc);
 DEFINE_UNARY_FLOATING_FUNCTOR(erfcx);
 DEFINE_UNARY_FLOATING_FUNCTOR(erfinv);
 DEFINE_UNARY_FLOATING_FUNCTOR(sinc);
+DEFINE_UNARY_FLOATING_FUNCTOR(log_ndtr);
+DEFINE_UNARY_FLOATING_FUNCTOR(ndtri);
+DEFINE_UNARY_FLOATING_FUNCTOR(airy_ai_forward);
 
 REGISTER_UNARY_OP(neg, int, int);
 REGISTER_UNARY_OP(neg, long, long);
@@ -713,6 +804,9 @@ REGISTER_UNARY_OP(abs, half, half);
   REGISTER_UNARY_OP(erfc, DTYPE1, DTYPE0);         \
   REGISTER_UNARY_OP(erfcx, DTYPE1, DTYPE0);        \
   REGISTER_UNARY_OP(erfinv, DTYPE1, DTYPE0);       \
+  REGISTER_UNARY_OP(log_ndtr, DTYPE1, DTYPE0);     \
+  REGISTER_UNARY_OP(ndtri, DTYPE1, DTYPE0);        \
+  REGISTER_UNARY_OP(airy_ai_forward, DTYPE1, DTYPE0); \
   REGISTER_UNARY_OP(exp, DTYPE1, DTYPE0);          \
   REGISTER_UNARY_OP(expm1, DTYPE1, DTYPE0);        \
   REGISTER_UNARY_OP(sigmoid, DTYPE1, DTYPE0);      \

@@ -292,6 +292,10 @@ static void hypot_mps_kernel(TensorIteratorBase& iter) {
   lib.exec_binary_kernel(iter, "hypot");
 }
 
+static void heaviside_mps_kernel(TensorIteratorBase& iter) {
+  lib.exec_binary_kernel(iter, "heaviside");
+}
+
 static void gcd_mps_kernel(TensorIteratorBase& iter) {
   TORCH_CHECK_NOT_IMPLEMENTED(
       c10::isIntegralType(iter.common_dtype(), false), "gcd_mps not implemented for ", iter.common_dtype());
@@ -394,6 +398,7 @@ REGISTER_DISPATCH(remainder_stub, &remainder_mps_kernel)
 REGISTER_DISPATCH(igamma_stub, &igamma_mps_kernel)
 REGISTER_DISPATCH(igammac_stub, &igammac_mps_kernel)
 REGISTER_DISPATCH(hypot_stub, &hypot_mps_kernel)
+REGISTER_DISPATCH(heaviside_stub, &heaviside_mps_kernel)
 REGISTER_DISPATCH(gcd_stub, &gcd_mps_kernel)
 REGISTER_DISPATCH(lcm_stub, &lcm_mps_kernel)
 REGISTER_DISPATCH(bitwise_and_stub, &bitwise_and_mps_kernel)

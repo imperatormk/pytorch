@@ -294,6 +294,13 @@ struct hypot_functor {
   }
 };
 
+struct heaviside_functor {
+  template <typename T>
+  inline T operator()(const T a, const T b) {
+    return a == T(0) ? b : static_cast<T>(a > T(0));
+  }
+};
+
 struct atan2_functor {
   template <typename T, enable_if_t<is_floating_point_v<T>, bool> = true>
   inline T operator()(const T a, const T b) {
@@ -579,6 +586,8 @@ DEFINE_BINARY_COMPARISON_FUNCTOR(ge, >=);
   REGISTER_BINARY_CASTOUT_OP(NAME, half2, bool)
 
 REGISTER_FLOAT_BINARY_OP(hypot);
+REGISTER_FLOAT_BINARY_OP(heaviside);
+REGISTER_INTEGER_BINARY_OP(heaviside);
 REGISTER_FLOAT_BINARY_OP(atan2);
 REGISTER_INT2FLOAT_BINARY_OP(atan2);
 REGISTER_FLOAT_BINARY_OP(copysign);

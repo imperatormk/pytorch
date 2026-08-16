@@ -19,16 +19,25 @@
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 #else
+#include <ATen/ops/arange.h>
 #include <ATen/ops/as_strided.h>
+#include <ATen/ops/cat.h>
 #include <ATen/ops/empty.h>
 #include <ATen/ops/full.h>
+#include <ATen/ops/full_like.h>
 #include <ATen/ops/kthvalue_native.h>
 #include <ATen/ops/median_native.h>
+#include <ATen/ops/mode_native.h>
 #include <ATen/ops/nanmedian_native.h>
+#include <ATen/ops/ones.h>
+#include <ATen/ops/ones_like.h>
 #include <ATen/ops/sort.h>
 #include <ATen/ops/sort_native.h>
+#include <ATen/ops/sub.h>
 #include <ATen/ops/topk_native.h>
+#include <ATen/ops/where.h>
 #include <ATen/ops/zeros.h>
+#include <ATen/ops/zeros_like.h>
 #endif
 namespace at::native {
 namespace {
@@ -541,7 +550,7 @@ void kthvalue_out_mps_impl(const Tensor& self, int64_t k, int64_t dim, Tensor& v
     indices.copy_(values.toType(at::ScalarType::Long));
     return;
   }
-  TORCH_CHECK_NOT_IMPLEMENTED(supportedFloatingType(self) || isIntegralType(self.scalar_type(), /*includeBool=*/false),
+  TORCH_CHECK_NOT_IMPLEMENTED(supportedFloatingType(self) || isIntegralType(self.scalar_type(), /*includeBool=*/true),
                               "kthvalue_mps not implemented for ",
                               self.scalar_type());
 
@@ -796,5 +805,52 @@ std::tuple<Tensor&, Tensor&> nanmedian_out_mps(const Tensor& self,
                                                Tensor& values,
                                                Tensor& indices) {
   return median_with_indices_impl_mps(values, indices, self, dim, keepdim, /*ignore_nan=*/self.is_floating_point());
+}
+
+// Sort each slice, then take the longest run of equal values. torch.mode only
+// promises *an* index holding the modal value, so returning the sorted run's
+// member rather than the CPU's std::sort artifact is within contract.
+std::tuple<Tensor, Tensor> mode_mps(const Tensor& self, int64_t dim, bool keepdim) {
+  dim = maybe_wrap_dim(dim, self.dim());
+
+  if (self.dim() == 0) {
+    return std::make_tuple(self.clone(), at::zeros({}, self.options().dtype(at::kLong)));
+  }
+
+  const int64_t n = self.size(dim);
+  TORCH_CHECK(n > 0, "mode(): reduction dim ", dim, " must be non-empty");
+
+  const Tensor moved = self.transpose(dim, -1).contiguous();
+  auto [sorted, order] = at::sort(moved, /*stable=*/true, -1, /*descending=*/false);
+
+  const Tensor pos = at::arange(n, order.options()).expand_as(order);
+  Tensor run_last;
+  if (n == 1) {
+    run_last = at::ones({}, sorted.options().dtype(at::kBool)).expand_as(sorted);
+  } else {
+    const Tensor neq = sorted.slice(-1, 0, n - 1).ne(sorted.slice(-1, 1, n));
+    run_last = at::cat({neq, at::ones_like(neq.slice(-1, 0, 1))}, -1);
+  }
+
+  // Frequency of each run, recorded at the run's last slot.
+  const Tensor ends = at::where(run_last, pos, at::full_like(pos, -1));
+  const Tensor prev = std::get<0>(ends.cummax(-1));
+  const Tensor prev_shifted = at::cat({at::full_like(prev.slice(-1, 0, 1), -1), prev.slice(-1, 0, n - 1)}, -1);
+  const Tensor freq = at::where(run_last, at::sub(pos, prev_shifted), at::zeros_like(pos));
+
+  const Tensor best = freq.argmax(-1, /*keepdim=*/true);
+  Tensor values = sorted.gather(-1, best);
+  Tensor indices = order.gather(-1, best);
+
+  // `moved` put the reduced axis last; undo that for the kept-dim shape.
+  auto out_sizes = self.sizes().vec();
+  out_sizes[dim] = 1;
+  values = values.transpose(dim, -1).reshape(out_sizes);
+  indices = indices.transpose(dim, -1).reshape(out_sizes);
+  if (!keepdim) {
+    values = values.squeeze(dim);
+    indices = indices.squeeze(dim);
+  }
+  return std::make_tuple(values.contiguous(), indices.contiguous());
 }
 } // namespace at::native

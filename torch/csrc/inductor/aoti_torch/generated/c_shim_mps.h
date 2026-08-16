@@ -29,6 +29,7 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps__grouped_mm(AtenTensorHandle sel
 #endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_12_0
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps__histogramdd_from_bin_cts(AtenTensorHandle self, const int64_t* bins, int64_t bins_len_, const double** range, int64_t range_len_, AtenTensorHandle* weight, int32_t density, AtenTensorHandle* ret0);
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps__int_mm_out(AtenTensorHandle out, AtenTensorHandle self, AtenTensorHandle mat2);
+AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps__pdist_forward(AtenTensorHandle self, double p, AtenTensorHandle* ret0);
 #if TORCH_FEATURE_VERSION >= TORCH_VERSION_2_13_0
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps__scaled_dot_product_attention_math_for_mps_v2(AtenTensorHandle query, AtenTensorHandle key, AtenTensorHandle value, AtenTensorHandle* attn_mask, double dropout_p, int32_t is_causal, AtenTensorHandle* dropout_mask, double* scale, int32_t enable_gqa, AtenTensorHandle* ret0, AtenTensorHandle* ret1);
 #endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_13_0
@@ -97,6 +98,7 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_max_unpool2d(AtenTensorHandle se
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_max_unpool3d(AtenTensorHandle self, AtenTensorHandle indices, const int64_t* output_size, int64_t output_size_len_, const int64_t* stride, int64_t stride_len_, const int64_t* padding, int64_t padding_len_, AtenTensorHandle* ret0);
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_median(AtenTensorHandle self, AtenTensorHandle* ret0);
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_mm_out(AtenTensorHandle out, AtenTensorHandle self, AtenTensorHandle mat2);
+AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_mode(AtenTensorHandle self, int64_t dim, int32_t keepdim, AtenTensorHandle* ret0, AtenTensorHandle* ret1);
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_mul_Scalar(AtenTensorHandle self, double other, AtenTensorHandle* ret0);
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_mul_Tensor(AtenTensorHandle self, AtenTensorHandle other, AtenTensorHandle* ret0);
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_nanmedian(AtenTensorHandle self, AtenTensorHandle* ret0);
