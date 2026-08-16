@@ -5111,11 +5111,18 @@ class TestPrologueFusion(TestCase):
             self.assertEqual(out, foo(x, y, fn), atol=0.05, rtol=0.05)
             self.check_code(code[0], num_kernels=1, num_allocs=1, num_deallocs=2)
 
+            # The claim is about `a`, the operand the prologue was fused into:
+            # it is masked exactly when its prologue does not preserve zero.
+            # A template that clamps the K index rather than masking the load
+            # (triton_mm_mps) still decides per operand, but emits the mask as
+            # its own statement further down the body, so the check has to name
+            # the assignment target instead of relying on adjacency to `a =`.
             if should_mask:
-                f = FileCheck().check("k_idx").check("a =").check_same("tl.where")
+                FileCheck().check("k_idx").check("a = tl.where").check("tl.dot").run(
+                    code[0]
+                )
             else:
-                f = FileCheck().check("k_idx").check("a =").check_not("tl.where")
-            f.check("tl.dot").run(code[0])
+                self.assertNotIn("a = tl.where", code[0])
 
     @config.patch(realize_reads_threshold=1, realize_opcount_threshold=1)
     @parametrize("benchmark_fusion", (True, False))
