@@ -1579,7 +1579,9 @@ class TestInductorOpInfo(TestCase):
         #     print(f"SUCCEEDED OP {op_name} on {device_type} with {dtype}", flush=True, file=f)
 
 
-instantiate_device_type_tests(TestInductorOpInfo, globals(), allow_xpu=True)
+instantiate_device_type_tests(
+    TestInductorOpInfo, globals(), allow_mps=True, allow_xpu=True
+)
 
 if __name__ == "__main__":
     run_tests()
