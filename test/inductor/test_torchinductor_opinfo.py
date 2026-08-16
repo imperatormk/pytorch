@@ -254,14 +254,6 @@ inductor_skips["mps"] = {
     "float_power": _mps_float64_output,
     "logspace": _mps_float64_output,
     "logspace.tensor_overload": _mps_float64_output,
-    # Returns uninitialized memory, so only the metadata is meaningful; the
-    # value comparison this suite performs is not.
-    "empty": _mps_float64_output,
-    "empty_like": _mps_float64_output,
-    "empty_strided": _mps_float64_output,
-    "empty_permuted": _mps_float64_output,
-    "new_empty": _mps_float64_output,
-    "new_empty_strided": _mps_float64_output,
 }
 
 inductor_expected_failures_single_sample = defaultdict(dict)
@@ -763,6 +755,19 @@ inductor_override_kwargs["xpu"] = {
         "check_gradient": False,
     },
 }
+
+inductor_override_kwargs["mps"] = {
+    # the return value of empty is undefined
+    "empty": {"assert_equal": False},
+    "empty_permuted": {"assert_equal": False},
+    "empty_like": {"assert_equal": False},
+    "new_empty": {"assert_equal": False},
+    "empty_strided": {"assert_equal": False},
+    "new_empty_strided": {"assert_equal": False},
+    "randn": {"assert_equal": False},
+    "nn.functional.rrelu": {"check_gradient": False},
+}
+
 if TEST_WITH_ROCM:
     inductor_override_kwargs["cuda"].update(
         {

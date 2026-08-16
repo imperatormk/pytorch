@@ -12,15 +12,22 @@
 #include <ATen/ops/_log_softmax_native.h>
 #include <ATen/ops/_prelu_kernel_backward_native.h>
 #include <ATen/ops/_prelu_kernel_native.h>
+#include <ATen/ops/empty_like.h>
 #include <ATen/ops/gelu_backward_native.h>
 #include <ATen/ops/gelu_native.h>
 #include <ATen/ops/hardtanh_backward_native.h>
+#include <ATen/ops/le.h>
+#include <ATen/ops/leaky_relu.h>
+#include <ATen/ops/mul.h>
+#include <ATen/ops/ones_like.h>
 #include <ATen/ops/relu_native.h>
+#include <ATen/ops/rrelu_with_noise_native.h>
 #include <ATen/ops/softplus_backward_native.h>
 #include <ATen/ops/softplus_native.h>
 #include <ATen/ops/tanh_backward_native.h>
 #include <ATen/ops/threshold_backward_native.h>
 #include <ATen/ops/threshold_native.h>
+#include <ATen/ops/where.h>
 #endif
 
 using namespace at::mps;
@@ -625,6 +632,50 @@ Tensor& hardtanh_backward_out_mps(const Tensor& grad_output,
   }
 
   return grad_input;
+}
+
+Tensor& rrelu_with_noise_out_mps(const Tensor& self,
+                                 Tensor& noise,
+                                 const Scalar& lower,
+                                 const Scalar& upper,
+                                 bool training,
+                                 std::optional<Generator> generator,
+                                 Tensor& output) {
+  TORCH_CHECK(self.sym_sizes() == noise.sym_sizes(),
+              "noise tensor shape must match self tensor shape. Got self.shape = ",
+              self.sym_sizes(),
+              " noise.shape = ",
+              noise.sym_sizes());
+  if (!training) {
+    auto negative_slope = (lower.to<double>() + upper.to<double>()) / 2;
+    return at::leaky_relu_out(output, self, negative_slope);
+  }
+  // noise holds the per-element slope: a fresh U(lower, upper) draw where the
+  // input is non-positive, 1 elsewhere, so that output == self * noise and the
+  // backward pass can reuse it without re-deriving which elements were negative.
+  noise.uniform_(lower.to<double>(), upper.to<double>(), std::move(generator));
+  noise.copy_(at::where(self.le(0), noise, at::ones_like(noise)));
+  at::mul_out(output, self, noise);
+  return output;
+}
+
+Tensor rrelu_with_noise_mps(const Tensor& self,
+                            Tensor& noise,
+                            const Scalar& lower,
+                            const Scalar& upper,
+                            bool training,
+                            std::optional<Generator> generator) {
+  auto output = at::empty_like(self, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+  return rrelu_with_noise_out_mps(self, noise, lower, upper, training, std::move(generator), output);
+}
+
+Tensor& rrelu_with_noise_mps_(Tensor& self,
+                              Tensor& noise,
+                              const Scalar& lower,
+                              const Scalar& upper,
+                              bool training,
+                              std::optional<Generator> generator) {
+  return rrelu_with_noise_out_mps(self, noise, lower, upper, training, std::move(generator), self);
 }
 
 } // namespace at::native
