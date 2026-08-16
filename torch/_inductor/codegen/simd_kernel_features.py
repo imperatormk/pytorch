@@ -176,7 +176,11 @@ class SIMDKernelFeatures:
             for access in node.read_writes.reads | node.read_writes.writes:
                 try:
                     sizes.append(V.graph.get_dtype(access.name).itemsize)
-                except (KeyError, AttributeError):
+                except (KeyError, AttributeError, NotImplementedError):
+                    # A buffer whose OutputSpec is not a Layout -- NoneLayout
+                    # for a pure side effect, MultiOutputLayout for a tuple --
+                    # reports "no dtype" by raising NotImplementedError. It
+                    # stages nothing, so it cannot widen the footprint.
                     pass
         return max(sizes)
 
