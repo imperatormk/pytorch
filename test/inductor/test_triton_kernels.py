@@ -3535,17 +3535,26 @@ def forward(self, arg0_1, arg1_1):
     @inductor_config.patch({"triton.autotune_at_compile_time": True})
     @parametrize("quotes", ["single", "double"])
     def test_kernel_inline_asm(self, quotes):
+        # The two kernel pairs carry PTX and GCN assembly respectively, so this
+        # test only means anything on a backend that speaks one of them. Any
+        # other GPU reaches the else-branch and hands AMD assembly to a compiler
+        # that cannot lower it.
         if torch.version.cuda:
             kernel = (
                 kernel_inline_asm_single_quotes
                 if quotes == "single"
                 else kernel_inline_asm_double_quotes
             )
-        else:
+        elif torch.version.hip:
             kernel = (
                 kernel_inline_asm_rocm_single_quotes
                 if quotes == "single"
                 else kernel_inline_asm_rocm_double_quotes
+            )
+        else:
+            raise unittest.SkipTest(
+                "tl.inline_asm_elementwise needs backend-specific assembly; "
+                f"only CUDA (PTX) and ROCm (GCN) variants exist, {GPU_TYPE} has neither"
             )
 
         # https://github.com/pytorch/pytorch/issues/155006
