@@ -159,18 +159,19 @@ class CooperativeReductionTests(TestCase):
         # Compute the reference in float64 for reduced-precision inputs so the
         # eager baseline does not itself carry the same accumulation error that
         # the compiled reduction does.
+        # MPS has no float64, so any float64 reference -- the upcast inputs here,
+        # or the float64 outputs of the dtype=None path below -- has to live on
+        # the CPU. The reference is a precision oracle, not a device test, so
+        # where it runs does not matter, only that it is more precise than the
+        # kernel under test.
+        ref_device = (
+            "cpu"
+            if any(isinstance(t, torch.Tensor) and t.device.type == "mps" for t in args)
+            else None
+        )
         ref_dtype = dtype
-        ref_device = None
         if dtype in (torch.float16, torch.float32):
             ref_dtype = torch.float64
-            # MPS has no float64, so the upcast has to happen on CPU. The
-            # reference is a precision oracle, not a device test, so where it
-            # runs does not matter -- only that it is more precise than the
-            # kernel under test.
-            if any(
-                isinstance(t, torch.Tensor) and t.device.type == "mps" for t in args
-            ):
-                ref_device = "cpu"
 
         # Move first, THEN upcast. Asking one .to() for both a CPU destination
         # and float64 off an MPS tensor silently yields all zeros -- the device
@@ -184,43 +185,26 @@ class CooperativeReductionTests(TestCase):
         # Calculate expected output
         raw_expected = fn(*args_ref)
 
+        # Normalise both sides of the comparison to one dtype and one device.
+        # dtype=None (bool reductions) keeps the reference in float64, which a
+        # tensor on MPS cannot hold at all, so those land on the CPU -- and the
+        # compiled result has to follow them there, or assert_close compares
+        # across devices.
+        cmp_dtype = dtype if dtype is not None else torch.float64
+        cmp_device = ref_device if cmp_dtype == torch.float64 else None
+
+        def to_ref(t):
+            if not isinstance(t, torch.Tensor):
+                return t
+            return (t.to(cmp_device) if cmp_device else t).to(cmp_dtype)
+
         if isinstance(raw_expected, (tuple, list)):
-            # If it's a tuple or list, apply .to(dtype) to each tensor within it
-            # Also, handle cases where dtype might not be provided (e.g., for bool reductions)
-            if dtype is not None:
-                expected = type(raw_expected)(
-                    [
-                        t.to(dtype) if isinstance(t, torch.Tensor) else t
-                        for t in raw_expected
-                    ]
-                )
-            else:
-                expected = type(raw_expected)(
-                    [
-                        t.to(torch.float64) if isinstance(t, torch.Tensor) else t
-                        for t in raw_expected
-                    ]
-                )
+            expected = type(raw_expected)([to_ref(t) for t in raw_expected])
         else:
-            # If it's a single tensor
-            if dtype is not None:
-                expected = raw_expected.to(dtype)
-            else:
-                expected = raw_expected.to(torch.float64)
+            expected = to_ref(raw_expected)
 
         fn_compiled = torch.compile(fn, fullgraph=True)
         result, (source_code,) = run_and_get_code(fn_compiled, *args)
-
-        # The reference may have been computed on CPU (see ref_device above);
-        # bring it back so assert_close does not trip on a device mismatch.
-        if ref_device is not None:
-            dev = args[0].device
-            if isinstance(expected, (tuple, list)):
-                expected = type(expected)(
-                    t.to(dev) if isinstance(t, torch.Tensor) else t for t in expected
-                )
-            elif isinstance(expected, torch.Tensor):
-                expected = expected.to(dev)
 
         # For comparison, ensure result is also a tuple/list if expected is
         if isinstance(expected, (tuple, list)):
@@ -228,23 +212,12 @@ class CooperativeReductionTests(TestCase):
                 result = (result,)
             elif not isinstance(result, type(expected)):
                 result = type(expected)(result)
-
-            if dtype is not None:
-                result = type(result)(
-                    [t.to(dtype) if isinstance(t, torch.Tensor) else t for t in result]
-                )
-            else:
-                result = type(result)(
-                    [
-                        t.to(torch.float64) if isinstance(t, torch.Tensor) else t
-                        for t in result
-                    ]
-                )
+            # to_ref puts both sides in the same dtype AND the same device, so
+            # the float64 case stays on the CPU rather than being sent back to a
+            # device that cannot hold it.
+            result = type(result)([to_ref(t) for t in result])
         else:
-            if dtype is not None and isinstance(result, torch.Tensor):
-                result = result.to(dtype)
-            elif isinstance(result, torch.Tensor):
-                result = result.to(torch.float64)
+            result = to_ref(result)
 
         # Apply assert_close with fixed tolerances for tensor comparisons
         if isinstance(result, torch.Tensor) and isinstance(expected, torch.Tensor):
