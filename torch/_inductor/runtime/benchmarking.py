@@ -752,6 +752,48 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
         # constant offset to every timing.
         sync_each_pair = device_type == "mps"
 
+        if device_type == "mps":
+            # Benchmark on a stream of our own. Each MPSStream owns its command
+            # queue, so nothing else can trigger an involuntary commit (adaptive,
+            # watermark- or allocator-driven) that splits a start/end pair across
+            # two command buffers and inverts their timestamps.
+            bench_stream = torch.mps.Stream()
+            bench_stream.wait_stream(torch.mps.current_stream())
+            stream_ctx: contextlib.AbstractContextManager[Any] = torch.mps.stream(
+                bench_stream
+            )
+        else:
+            stream_ctx = contextlib.nullcontext()
+
+        with stream_ctx:
+            return self._benchmark_gpu_body(
+                _callable,
+                device_interface=device_interface,
+                device_type=device_type,
+                estimation_iters=estimation_iters,
+                memory_warmup_iters=memory_warmup_iters,
+                benchmark_iters=benchmark_iters,
+                max_benchmark_duration=max_benchmark_duration,
+                return_mode=return_mode,
+                grad_to_none=grad_to_none,
+                sync_each_pair=sync_each_pair,
+            )
+
+    def _benchmark_gpu_body(
+        self: Self,
+        _callable: Callable[[], Any],
+        *,
+        device_interface: Any,
+        device_type: str,
+        estimation_iters: int,
+        memory_warmup_iters: int,
+        benchmark_iters: int,
+        max_benchmark_duration: int,
+        return_mode: str,
+        grad_to_none: list[torch.Tensor] | None,
+        sync_each_pair: bool,
+    ) -> float | list[float]:
+        """The timing loop, run with the benchmarking stream already selected."""
         # we don't want any outside errors propagating into benchmarking
         device_interface.synchronize()
 
