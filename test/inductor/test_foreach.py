@@ -6,6 +6,7 @@ import unittest.mock as mock
 
 import torch
 import torch._inductor
+from torch._dynamo.device_interface import get_interface_for_device
 from torch._higher_order_ops import foreach_map
 from torch._inductor import config
 from torch._inductor.test_case import TestCase
@@ -23,6 +24,19 @@ from torch.utils._pytree import tree_flatten
 
 
 aten = torch.ops.aten
+
+
+def _fp64_scalar_tensor(value):
+    """0-dim float64 scalar tensor, on GPU_TYPE when it has float64.
+
+    These tests pit a python scalar against the equivalent scalar-tensor
+    overload, so the tensor only has to carry the value at full fp64 fidelity --
+    a device without float64 can hold it on the CPU and still be the same
+    operand, since the op reads it as a scalar against float32 device inputs.
+    """
+    if get_interface_for_device(GPU_TYPE).is_dtype_supported(torch.float64):
+        return torch.tensor(value, device=GPU_TYPE, dtype=torch.float64)
+    return torch.tensor(value, dtype=torch.float64)
 
 try:
     try:
@@ -1101,7 +1115,6 @@ class ForeachTests(TestCase):
                 _ = run_fw_bw_and_get_code(lambda: torch.compile(fn)(*inps))
 
     @requires_gpu
-    @unittest.skipIf(GPU_TYPE == "mps", "MPS has no float64")
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     @torch._inductor.config.patch("_use_fp64_for_unbacked_floats", True)
     @parametrize(
@@ -1166,7 +1179,7 @@ class ForeachTests(TestCase):
                 [[0.25, 0.25], [0.25, 0.25]], device=GPU_TYPE, dtype=torch.float32
             ),
         )
-        scalar_tensor = torch.tensor(value, device=GPU_TYPE, dtype=torch.float64)
+        scalar_tensor = _fp64_scalar_tensor(value)
 
         # Compiled mode comparison - assert bitwise equality
         # The .item() path should preserve fp64 precision just like tensor scalar path
@@ -1180,7 +1193,6 @@ class ForeachTests(TestCase):
             self.assertEqual(a, b, atol=0, rtol=0)
 
     @requires_gpu
-    @unittest.skipIf(GPU_TYPE == "mps", "MPS has no float64")
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     @parametrize(
         "op",
@@ -1237,7 +1249,7 @@ class ForeachTests(TestCase):
                 dtype=torch.float32,
             ),
         )
-        scalar_tensor = torch.tensor(value, device=GPU_TYPE, dtype=torch.float64)
+        scalar_tensor = _fp64_scalar_tensor(value)
 
         # Eager mode comparison - assert bitwise equality
         eager_python_scalar = fn_python_scalar(*inputs)
