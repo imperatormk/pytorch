@@ -1225,6 +1225,17 @@ void MetalShaderLibrary::exec_unary_kernel_raw(std::string_view name,
   if (numel == 0) {
     return;
   }
+  // The destination dtype crosses into the shader as a runtime ScalarType and is
+  // dispatched by store_at_offs's switch over C10_METAL_ALL_TYPES_FUNCTOR. That
+  // list cannot contain Double -- MSL has no 64-bit float -- so a Double
+  // destination matches no case, falls off the end of the switch, and the kernel
+  // returns having written nothing. Unlike the source dtype, which would trip
+  // scalarToMetalTypeString's TORCH_CHECK below, nothing on the GPU can report
+  // this, so the caller silently receives zeros. Reject it here instead.
+  TORCH_CHECK(dst_dtype != kDouble,
+              "Cannot cast to float64 on MPS: the destination dtype is handled by a Metal kernel and "
+              "MSL has no 64-bit float type. Copy to the CPU first, then convert: "
+              "x.cpu().to(torch.float64), not x.to(device='cpu', dtype=torch.float64).");
   const bool use_ilp = ilp_threshold.has_value() && numel >= ilp_threshold.value();
   const std::string_view suffix = use_ilp ? "dense_castout_ilp" : "dense_castout";
   const auto kernel_name = fmt::format("{}_{}_{}", name, suffix, scalarToMetalTypeString(src_dtype));

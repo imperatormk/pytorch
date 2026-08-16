@@ -137,6 +137,18 @@ static std::pair<id<MTLBuffer>, NSUInteger> buffer_with_offset_from_tensor(const
 }
 
 static at::Tensor& copy_from_mps_(at::Tensor& dst_, const at::Tensor& src_, bool non_blocking) {
+  // The cross-dtype path below casts on the GPU, and MSL has no 64-bit float,
+  // so a float64 destination cannot be produced there. It is still a legal
+  // request -- the CPU can hold float64 -- so serve it by bringing the bytes
+  // over in the source dtype and widening on the host, where the arithmetic is
+  // actually representable.
+  if (dst_.scalar_type() == kDouble && src_.scalar_type() != kDouble) {
+    auto narrow_dst = at::empty_like(dst_, dst_.options().dtype(src_.scalar_type()));
+    copy_from_mps_(narrow_dst, src_, non_blocking);
+    dst_.copy_(narrow_dst);
+    return dst_;
+  }
+
   auto sameMemFormat =
       src_.is_contiguous(dst_.suggest_memory_format()) && dst_.is_contiguous(dst_.suggest_memory_format());
 
