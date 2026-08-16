@@ -186,12 +186,13 @@ class CooperativeReductionTests(TestCase):
         raw_expected = fn(*args_ref)
 
         # Normalise both sides of the comparison to one dtype and one device.
-        # dtype=None (bool reductions) keeps the reference in float64, which a
-        # tensor on MPS cannot hold at all, so those land on the CPU -- and the
-        # compiled result has to follow them there, or assert_close compares
-        # across devices.
+        # The reference ran wherever `ref_device` sent it, which is the CPU for
+        # every MPS case -- the float64 oracle above and the float64 outputs of
+        # the dtype=None path alike. The compiled result has to follow it there
+        # or assert_close compares across devices, so the destination keys off
+        # where the reference ran, not off the comparison dtype.
         cmp_dtype = dtype if dtype is not None else torch.float64
-        cmp_device = ref_device if cmp_dtype == torch.float64 else None
+        cmp_device = ref_device
 
         def to_ref(t):
             if not isinstance(t, torch.Tensor):
