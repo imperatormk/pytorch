@@ -20,6 +20,12 @@ from torch.testing._internal.common_utils import recover_orig_fp32_precision
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU, IS_BIG_GPU
 
 
+def _has_split_scan() -> bool:
+    from torch._inductor.codegen.common import BackendFeature, has_backend_feature
+
+    return has_backend_feature(GPU_TYPE, BackendFeature.SPLIT_SCAN)
+
+
 class TestKernelBenchmark(TestCase):
     device_type = GPU_TYPE
 
@@ -143,12 +149,13 @@ class TestKernelBenchmark(TestCase):
             print(e.output.decode())
             raise e
 
-        # make sure we have the bandwidth information in the output
-        FileCheck().check_count(
-            f"{num_gb} GB ",
-            1,
-            exactly=1,
-        ).run(bench_out)
+        # make sure we have the bandwidth information in the output.
+        # Not exactly=1: one logical kernel can be benchmarked several times
+        # and print a line each. A MultiKernel (default on MPS) times each of
+        # its variants, and -kc times each autotuning config (see #174765).
+        # Those lines all report the same traffic, so the count is a property
+        # of the benchmarking mode rather than of the kernel being measured.
+        FileCheck().check(f"{num_gb} GB ").run(bench_out)
 
     def test_plus1_kernel_benchmark(self):
         @torch.compile
@@ -458,6 +465,11 @@ class TestKernelBenchmark(TestCase):
         # 20000 * 5000 * 4 = 200MB for a
         self.check_bandwidth(compiled_module, "0.200")
 
+    @unittest.skipIf(
+        not _has_split_scan(),
+        "backend has no SPLIT_SCAN, so cumsum lowers to an aten fallback and "
+        "emits no Triton kernel to measure",
+    )
     def test_split_scan(self):
         @torch.compile
         def f(a):
