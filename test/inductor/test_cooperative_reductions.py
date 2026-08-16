@@ -172,9 +172,12 @@ class CooperativeReductionTests(TestCase):
             ):
                 ref_device = "cpu"
 
-        # Cast to the determined reference dtype
+        # Move first, THEN upcast. Asking one .to() for both a CPU destination
+        # and float64 off an MPS tensor silently yields all zeros -- the device
+        # cannot represent float64, so the cast never happens and nothing
+        # reports it, leaving the oracle a field of zeros.
         args_ref = [
-            tensor.to(device=ref_device or tensor.device, dtype=ref_dtype)
+            (tensor.to(ref_device) if ref_device else tensor).to(dtype=ref_dtype)
             for tensor in args
         ]
 
