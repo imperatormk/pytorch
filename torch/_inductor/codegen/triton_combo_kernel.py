@@ -326,17 +326,25 @@ class ComboKernel(Kernel):
     def _max_num_args(device: torch.device | None = None) -> int:
         """Argument budget for one combo kernel.
 
-        config.combo_kernel_max_num_args (250) reflects CUDA, which has no hard
-        cap. Metal binds at most 31 buffers per kernel, so on MPS a 250-arg
-        partition is unschedulable and the backend rejects it at codegen.
-
-        30, not 31: every tensor takes one binding, and the AppleGPU backend
-        packs all scalar arguments into a single extra `constant` buffer, so
-        one slot of the 31 is reserved whenever the kernel has any scalar.
+        Two independent limits, and the smaller wins.
+        config.combo_kernel_max_num_args (250) is a tuning knob: it bounds how
+        large a partition should get, and exceeding it costs performance, not
+        correctness. The backend's own limit is an ABI cap -- past it the
+        kernel cannot be compiled at all -- so it is owned by the scheduling
+        class and merely consulted here.
         """
         limit = config.combo_kernel_max_num_args
-        if device is not None and device.type == "mps":
-            limit = min(limit, 30)
+        if device is not None:
+            from .common import get_scheduling_for_device
+
+            scheduling_ctor = get_scheduling_for_device(device.type)
+            if scheduling_ctor is not None:
+                getter = getattr(
+                    scheduling_ctor(None), "max_kernel_buffer_args", None
+                )
+                hw_limit = getter(device) if getter is not None else None
+                if hw_limit is not None:
+                    limit = min(limit, hw_limit)
         return limit
 
     @staticmethod

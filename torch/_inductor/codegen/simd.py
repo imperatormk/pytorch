@@ -2059,6 +2059,39 @@ class SIMDScheduling(BaseScheduling):
     def group_fn(self, sizes):
         return tuple(V.graph.sizevars.simplify(sympy_product(s)) for s in sizes)
 
+    def max_kernel_buffer_args(self, device: torch.device) -> int | None:
+        """
+        Largest number of distinct buffers a single kernel may bind, or None if
+        the backend has no such limit. Backends whose ABI caps the argument
+        table override this; fusion then treats it as a scheduling constraint
+        instead of leaving codegen to fail on an unsatisfiable kernel.
+        """
+        return None
+
+    def _exceeds_buffer_args(self, node1, node2) -> bool:
+        device = node1.get_device()
+        if device is None:
+            return False
+        limit = self.max_kernel_buffer_args(device)
+        if limit is None:
+            return False
+        used = node1.used_buffer_names() | node2.used_buffer_names()
+        # A buffer the fused pair both writes and reads is produced and
+        # consumed inside the kernel, so it needs no binding -- unless someone
+        # outside the pair reads it too, in which case it must be materialized.
+        # Discounting these matters right at the cap: counting the N-1
+        # intermediates of a pointwise chain would split fusions that fit.
+        fused_nodes = OrderedSet([*node1.get_nodes(), *node2.get_nodes()])
+        for name in node1.get_buffer_names() | node2.get_buffer_names():
+            if name not in used:
+                continue
+            buf = self.scheduler.name_to_buf.get(name)
+            if buf is None:
+                continue
+            if not (OrderedSet(user.node for user in buf.users) - fused_nodes):
+                used.discard(name)
+        return len(used) > limit
+
     def can_fuse(self, node1, node2):
         """
         Hook called by Scheduler to determine if the Triton backend
@@ -2073,6 +2106,10 @@ class SIMDScheduling(BaseScheduling):
         _, (numel1, rnumel1) = node1.group
         _, (numel2, rnumel2) = node2.group
         why = WhyNoFuse(node1, node2)
+
+        if self._exceeds_buffer_args(node1, node2):
+            why("fused kernel would bind more buffers than the backend allows")
+            return False
 
         if node1.is_split_scan() and not node2.is_split_scan():
             if node2.is_reduction():

@@ -7992,6 +7992,16 @@ class TritonScheduling(SIMDScheduling):
             if isinstance(node, (SchedulerNode, FusedSchedulerNode)):
                 node.debug_device_str = debug_triton_code
 
+    def max_kernel_buffer_args(self, device: torch.device) -> int | None:
+        if device.type != "mps":
+            return None
+        # Metal binds at most 31 buffers (indices 0-30) per kernel, and the
+        # AppleGPU backend spends one of those slots on a packed argbuf for the
+        # scalar arguments -- every kernel has at least xnumel -- leaving 30 for
+        # tensors. Past that the backend cannot compile the kernel at all, so
+        # the limit has to bound fusion rather than be discovered in codegen.
+        return 30
+
     @classmethod
     def get_backend_features(cls, device: torch.device):
         features = cls.backend_features
