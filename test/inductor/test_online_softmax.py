@@ -6,6 +6,7 @@ import os
 import torch
 import torch._inductor.config as inductor_config
 import torch.nn.functional as F
+from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.utils import rmse, same
 from torch._inductor.runtime.hints import DeviceProperties
 from torch._inductor.test_case import run_tests, TestCase
@@ -26,6 +27,22 @@ def _prepare_softmax(x, dim):
     xmax = x.amax(dim=dim, keepdim=True)
     xsum = (x - xmax).exp().sum(dim=dim, keepdim=True)
     return xmax, xsum
+
+
+def _to_fp64_reference(x):
+    """Upcast to float64 for use as a precision oracle.
+
+    The float64 value is only ever an rmse operand against a lower-precision
+    result -- it is the yardstick, not the thing under test -- so a device
+    without float64 can supply it from the CPU without changing what the
+    comparison measures.
+    """
+    if get_interface_for_device(x.device.type).is_dtype_supported(torch.float64):
+        return x.to(dtype=torch.float64)
+    # Move first, THEN upcast. Asking for both in one .to() off an MPS tensor
+    # silently yields all zeros for any float64 destination -- the device has no
+    # float64, so the cast never happens and nothing reports it.
+    return x.cpu().to(dtype=torch.float64)
 
 
 class TestOnlineSoftmax(TestCase):
@@ -352,17 +369,19 @@ class TestOnlineSoftmax(TestCase):
 
         x = torch.randn(M, N, device=GPU_TYPE, dtype=dtype)
 
-        ref_fp64 = _prepare_softmax(x.to(dtype=torch.float64), dim=-1)
+        ref_fp64 = _prepare_softmax(_to_fp64_reference(x), dim=-1)
         ref = _prepare_softmax(x, dim=-1)
         res, (code,) = run_and_get_code(torch.compile(_prepare_softmax), x, dim=-1)
         self.assertTrue("online_softmax_reduce" in code)
 
+        oracle_dev = ref_fp64[0].device
+
         # Max should be exactly equal
         self.assertEqual(ref[0], res[0])
-        self.assertEqual(ref[0].to(dtype=torch.float64), ref_fp64[0])
+        self.assertEqual(_to_fp64_reference(ref[0]), ref_fp64[0])
 
-        ref_error = rmse(ref_fp64[1], ref[1]).item()
-        res_error = rmse(ref_fp64[1], res[1]).item()
+        ref_error = rmse(ref_fp64[1], ref[1].to(oracle_dev)).item()
+        res_error = rmse(ref_fp64[1], res[1].to(oracle_dev)).item()
 
         # My local tests even shows a smaller res_error:
         #   ref_error=2.1065, res_error=2.1028
@@ -387,13 +406,14 @@ class TestOnlineSoftmax(TestCase):
 
         x = torch.randn(M, N, device=GPU_TYPE, dtype=dtype)
 
-        ref_fp64 = fn(x.to(dtype=torch.float64), dim=-1)
+        ref_fp64 = fn(_to_fp64_reference(x), dim=-1)
         ref = fn(x, dim=-1)
         res, (code,) = run_and_get_code(torch.compile(fn), x, dim=-1)
         self.assertTrue("online_softmax_reduce" in code)
 
-        ref_error = rmse(ref_fp64, ref).item()
-        res_error = rmse(ref_fp64, res).item()
+        oracle_dev = ref_fp64.device
+        ref_error = rmse(ref_fp64, ref.to(oracle_dev)).item()
+        res_error = rmse(ref_fp64, res.to(oracle_dev)).item()
 
         # For torch.softmax,
         # I get almost 0 for ref_error/res_error for all 3 dtypes. It's because
