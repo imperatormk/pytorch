@@ -1574,7 +1574,7 @@ class PythonWrapperCodegen(CodeGen):
                 empty_strided_cuda = torch._C._dynamo.guards._empty_strided_cuda
                 empty_strided_xpu = torch._C._dynamo.guards._empty_strided_xpu
                 empty_strided_mtia = torch._C._dynamo.guards._empty_strided_mtia
-                empty_strided_mps = torch._C._dynamo.guards._empty_strided_mps
+                empty_strided_mps = getattr(torch._C._dynamo.guards, '_empty_strided_mps', None)
                 reinterpret_tensor = torch._C._dynamo.guards._reinterpret_tensor
                 alloc_from_pool = torch.ops.inductor._alloc_from_pool
                 async_compile = AsyncCompile()
@@ -1660,7 +1660,7 @@ class PythonWrapperCodegen(CodeGen):
                 generate_example_value = AlgorithmSelectorCache.generate_example_value
                 empty_strided_cuda = torch._C._dynamo.guards._empty_strided_cuda
                 empty_strided_xpu = torch._C._dynamo.guards._empty_strided_xpu
-                empty_strided_mps = torch._C._dynamo.guards._empty_strided_mps
+                empty_strided_mps = getattr(torch._C._dynamo.guards, '_empty_strided_mps', None)
             """
         )
 
@@ -4292,7 +4292,12 @@ class PythonWrapperCodegen(CodeGen):
                 f"{codegen_stride_tuple}, "
                 f"{dtype})"
             )
-        elif device.type in ("cpu", "cuda", "xpu", "mtia", "mps"):
+        elif device.type in ("cpu", "cuda", "xpu", "mtia") or (
+            # mps only got its _empty_strided_mps binding recently; fall through
+            # to the generic allocator on a runtime that predates it.
+            device.type == "mps"
+            and hasattr(torch._C._dynamo.guards, "_empty_strided_mps")
+        ):
             # optimized path for faster allocations, saving ~2us versus the stuff below
             out = (
                 f"{name} = empty_strided_{device.type}("
