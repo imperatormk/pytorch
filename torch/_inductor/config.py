@@ -2128,16 +2128,16 @@ class triton:
     # 1/True: enable, use tuning to pick between different subkernels
     # 2: enable, force using persistent reduction (for debugging)
     # 3: enable, force using non-persistent reduction (for debugging)
-    # Defaults on for MPS: reduction sizes between the persistent and
-    # add_persistent_rblock heuristics (H=2048) otherwise emit a looped
-    # reduction that runs ~5x under the persistent one. Left off elsewhere so
-    # CUDA/ROCm behaviour is unchanged.
+    # Off by default on every backend; set TORCHINDUCTOR_MULTI_KERNEL=1 to opt in.
+    # It is worth enabling on MPS, where reduction sizes between the persistent
+    # and add_persistent_rblock heuristics (H=2048) otherwise emit a looped
+    # reduction that runs ~5x under the persistent one -- but it emits both a
+    # persistent and a non-persistent variant of each reduction, which doubles
+    # the @triton.jit definitions and breaks every test that asserts an exact
+    # kernel count.
     # pyrefly: ignore [bad-assignment]
     multi_kernel: Literal[0, 1, 2, 3] = int(
-        os.environ.get(
-            "TORCHINDUCTOR_MULTI_KERNEL",
-            "1" if torch.mps.is_available() else "0",
-        )
+        os.environ.get("TORCHINDUCTOR_MULTI_KERNEL", "0")
     )  # type: ignore[assignment]
 
     # hint to Triton when arguments are divisible by 16
