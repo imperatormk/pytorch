@@ -11,6 +11,7 @@ import torch._inductor.config as inductor_config
 import torch._inductor.fx_passes.post_grad
 import torch._inductor.pattern_matcher as pattern_matcher
 import torch.nn.functional as F
+from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.utils import count_calls, counters, detect_fake_mode
 from torch._higher_order_ops.auto_functionalize import auto_functionalized
 from torch._higher_order_ops.out_dtype import out_dtype
@@ -1790,15 +1791,29 @@ class TestPatternMatcher(TestCase):
         x = torch.randn(32, 256, device=GPU_TYPE)
 
         def rmse(a, b):
-            return torch.sqrt(torch.mean((a.float() - b.float()) ** 2)).item()
+            # a may be the fp64 reference computed on another device.
+            return torch.sqrt(
+                torch.mean((a.float().cpu() - b.float().cpu()) ** 2)
+            ).item()
 
-        # fp64 ground truth
-        model_fp64 = Model().double().to(GPU_TYPE)
+        # fp64 ground truth. It is only an rmse yardstick against the two
+        # lower-precision results, so a device without float64 can compute it
+        # on the CPU without changing what the comparison measures.
+        fp64_device = (
+            GPU_TYPE
+            if get_interface_for_device(GPU_TYPE).is_dtype_supported(torch.float64)
+            else "cpu"
+        )
+        # Build on fp64_device first: under a default-device mode the module is
+        # born on GPU_TYPE, and .double() raises there before any .to() runs.
+        with torch.device(fp64_device):
+            model_fp64 = Model()
+        model_fp64 = model_fp64.to(fp64_device).double()
         model_fp64.load_state_dict(
-            {k: v.double() for k, v in model.state_dict().items()}
+            {k: v.to(fp64_device).double() for k, v in model.state_dict().items()}
         )
         with torch.no_grad():
-            fp64_ref = model_fp64(x.double())
+            fp64_ref = model_fp64(x.to(fp64_device).double())
 
         # Eager under AMP
         with torch.no_grad(), torch.autocast(GPU_TYPE, dtype=dtype):
