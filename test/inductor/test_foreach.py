@@ -36,7 +36,9 @@ def _fp64_scalar_tensor(value):
     """
     if get_interface_for_device(GPU_TYPE).is_dtype_supported(torch.float64):
         return torch.tensor(value, device=GPU_TYPE, dtype=torch.float64)
-    return torch.tensor(value, dtype=torch.float64)
+    # Explicitly CPU: these tests run under a default-device mode, so omitting
+    # device= builds on GPU_TYPE and the float64 request raises there.
+    return torch.tensor(value, device="cpu", dtype=torch.float64)
 
 try:
     try:
