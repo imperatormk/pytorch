@@ -2787,6 +2787,20 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
             torch.float8_e4m3fn,
         ):
             return "tl.float32"
+        # A K-loop sum overflows any integer narrower than the accumulator, so
+        # the narrow integer dtypes widen to int32 the same way the low-precision
+        # floats widen to fp32. int64 keeps its own width.
+        if dtype in (
+            torch.int8,
+            torch.uint8,
+            torch.int16,
+            torch.uint16,
+            torch.int32,
+            torch.uint32,
+        ):
+            return "tl.int32"
+        if dtype in (torch.int64, torch.uint64):
+            return "tl.int64"
         return self._dtype_to_triton(dtype)
 
 

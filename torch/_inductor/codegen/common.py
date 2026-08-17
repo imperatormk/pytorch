@@ -1661,6 +1661,15 @@ class KernelArgs:
         self.inplace_buffers: dict[str, InplacedBuffer | RemovedArg] = {}
         self.sizevars: dict[sympy.Expr, str] = {}
         self.workspace_args: list[WorkspaceArg] = []
+        # An aten.view.dtype operand reaches a template as a ReinterpretView whose
+        # get_name() is the underlying buffer, so the buffer dtype disagrees with the
+        # dtype the host actually passes (codegen_reference applies the view).
+        self.dtype_overrides: dict[str, torch.dtype] = {}
+
+    def buffer_dtype(self, name: str) -> torch.dtype:
+        if name in self.dtype_overrides:
+            return self.dtype_overrides[name]
+        return V.graph.get_dtype(name)
 
     def __repr__(self) -> str:
         return "KernelArgs({})".format(
@@ -1940,12 +1949,12 @@ class KernelArgs:
                 continue
             arg_defs.append(ArgName(inner))
             call_args.append(outer)
-            arg_types.append(V.graph.get_dtype(outer))
+            arg_types.append(self.buffer_dtype(outer))
             precompile_args.append(
                 TensorArg(
                     name=inner,
                     buffer=outer,
-                    dtype=V.graph.get_dtype(outer),
+                    dtype=self.buffer_dtype(outer),
                 )
             )
         for outer, inner in self.sizevars.items():

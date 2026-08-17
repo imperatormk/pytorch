@@ -1051,6 +1051,8 @@ class TritonTemplateKernel(TritonKernel):
                 continue
 
             self.args.input_buffers[input_node.get_name()] = arg_name
+            if input_node.get_dtype() != V.graph.get_dtype(input_node.get_name()):
+                self.args.dtype_overrides[input_node.get_name()] = input_node.get_dtype()
 
         # The args may be duplicated, so renaming must be after args are de-duplicated.
         for name in argnames:
@@ -1263,6 +1265,13 @@ class TritonTemplateKernel(TritonKernel):
         input_node = self.named_input_nodes[input_name]
         if not self.prologue_loads_all_inputs:
             self.prologue_supported_inputs.add(input_node.get_name())
+
+        # The masked-out fill is emitted as a literal into both the tl.load and the
+        # tl.where below. A bare literal takes Triton's own default type (float for
+        # 0.0), which promotes an integer input and leaves tl.dot with mismatched
+        # operand dtypes, so pin it to the input's dtype.
+        if other is not None and not input_node.get_dtype().is_floating_point:
+            other = f"tl.full([], {int(other)}, {triton_type(input_node.get_dtype())})"
 
         tilings = (sympy_product(input_node.get_size()), sympy.Integer(1))
         groups = {

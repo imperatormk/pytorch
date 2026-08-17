@@ -1941,15 +1941,27 @@ def _mps_triton_gemm_enabled(layout: Layout) -> bool:
 def use_triton_template(
     layout: Layout,
     *,
-    enable_int32: bool = False,
     enable_float8: bool = False,
     check_max_autotune: bool = True,
 ) -> bool:
     from .codegen.common import BackendFeature, has_backend_feature
 
-    layout_dtypes = [torch.float16, torch.bfloat16, torch.float32]
-    if enable_int32:
-        layout_dtypes = [torch.float16, torch.bfloat16, torch.float32, torch.int32]
+    # tl.dot accepts every integer width (it promotes narrow operands to the
+    # accumulator itself), so an integer mm has a real Triton choice rather than
+    # falling through to NoValidChoicesError when ATEN is excluded.
+    layout_dtypes = [
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+        torch.int8,
+        torch.uint8,
+        torch.int16,
+        torch.uint16,
+        torch.int32,
+        torch.uint32,
+        torch.int64,
+        torch.uint64,
+    ]
     if enable_float8:
         layout_dtypes.extend([torch.float8_e4m3fn, torch.float8_e5m2])
     return (

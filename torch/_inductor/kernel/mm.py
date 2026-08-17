@@ -446,15 +446,14 @@ def tuned_mm(mat1, mat2, out_dtype=None, *, layout=None):
         if aten_extra_kwargs:
             kwarg_overrides[aten_handler.uid] = aten_extra_kwargs
 
-    # The Triton mm template requires both operands to share one floating-point
-    # dtype. A mismatched-dtype mm (e.g. float32 x int64) can never produce a
-    # valid Triton choice; if it is the only template and the aten choice also
+    # The Triton mm template requires both operands to share one dtype. A
+    # mismatched-dtype mm (e.g. float32 x int64) can never produce a valid
+    # Triton choice; if it is the only template and the aten choice also
     # rejects it, the autotuner raises NoValidChoicesError, masking the real
     # "expected same dtype" error. Skip the Triton template for such inputs so
-    # the dtype mismatch surfaces through the normal path.
-    mat_dtypes_ok = (
-        mat1.get_dtype() == mat2.get_dtype() and mat1.get_dtype().is_floating_point
-    )
+    # the dtype mismatch surfaces through the normal path. Matched integer
+    # operands are fine: tl.dot promotes them to its accumulator.
+    mat_dtypes_ok = mat1.get_dtype() == mat2.get_dtype()
 
     if (
         out_dtype is None
@@ -634,9 +633,7 @@ def tuned_int_mm(mat1, mat2, *, layout=None):
     if use_aten_gemm_kernels():
         templates_to_use.append(aten__int_mm)
 
-    if is_nonzero and use_triton_template(
-        layout, enable_int32=True, check_max_autotune=False
-    ):
+    if is_nonzero and use_triton_template(layout, check_max_autotune=False):
         templates_to_use.append(mm_template)
 
     # Single unified call for all templates
