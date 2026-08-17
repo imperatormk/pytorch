@@ -239,7 +239,7 @@ test_failures = {
     "test_avg_pool3d_backward4_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu", "mps")),
     "test_baddbmm_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
-    "test_bmm2_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_bmm2_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_both_scalars_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_compar_dynamic_shapes": TestFailure(("cpu",)),
     "test_complex_from_real_imag_dynamic_shapes": TestFailure(
@@ -522,7 +522,7 @@ if not TEST_WITH_ROCM:
     test_failures.update(
         {
             "test_custom_op_fixed_layout_sequential_dynamic_shapes": TestFailure(
-                ("cuda") if IS_LINUX else ("cpu", "cuda", "xpu")
+                ("cuda", "mps") if IS_LINUX else ("cpu", "cuda", "xpu", "mps")
             ),
         }
     )
