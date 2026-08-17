@@ -424,6 +424,15 @@ struct div_floor_functor {
           ::metal::is_integral_v<T>&& ::metal::is_signed_v<T>,
           bool> = true>
   inline T operator()(const T a, const T b) {
+    // Both guards mirror c10::div_floor_integer: division by zero is UB on the
+    // GPU and the sign branch below would turn it into -1, and INT_MIN / -1
+    // overflows.
+    if (b == 0) {
+      return T(0);
+    }
+    if (a == ::metal::numeric_limits<T>::lowest() && b == T(-1)) {
+      return a;
+    }
     const auto quot = a / b;
     if ((a < 0) == (b < 0)) {
       return quot;
@@ -436,7 +445,7 @@ struct div_floor_functor {
           ::metal::is_integral_v<T> && !::metal::is_signed_v<T>,
           bool> = true>
   inline T operator()(const T a, const T b) {
-    return a / b;
+    return b == 0 ? T(0) : a / b;
   }
 };
 
