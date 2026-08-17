@@ -196,17 +196,21 @@ test_failures = {
     # Fallback ops (data-dependent output size) route to ATen eager — no
     # Triton kernel or C++ loop is generated, so dynamic-shape codegen check fails.
     "test_bincount_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
-    "test_bincount_with_weights_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_bincount_with_weights_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")
+    ),
     "test_bincount_with_int_weights_dynamic_shapes": TestFailure(
-        ("cpu", "cuda", "xpu")
+        ("cpu", "cuda", "xpu", "mps")
     ),
     "test_bincount_empty_with_weights_dynamic_shapes": TestFailure(
-        ("cpu", "cuda", "xpu")
+        ("cpu", "cuda", "xpu", "mps")
     ),
     "test_unique_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_unique_dim_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_unique_consecutive_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
-    "test_unique_dim_consecutive_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_unique_dim_consecutive_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")
+    ),
     # test_amp_update_scale does not use self.common(), so check_codegen() is
     # never triggered — the test calls torch.compile() directly and passes.
     # No TestFailure entry needed.
@@ -356,10 +360,14 @@ test_failures = {
     "test_sort_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_sort_stable_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_sort_transpose_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
-    "test_split_cumsum_dynamic_shapes": TestFailure(("cpu",)),
-    "test_split_cumsum_low_prec_dynamic_shapes": TestFailure(("cpu",)),
-    "test_split_cumprod_dynamic_shapes": TestFailure(("cpu",)),
-    "test_split_cumprod_low_prec_dynamic_shapes": TestFailure(("cpu",)),
+    # mps drops BackendFeature.SPLIT_SCAN (decoupled-lookback split scan needs
+    # 64-bit device atomics, which Apple GPUs lack), so Scan.create declines and
+    # cumsum/cumprod take fallback_cumsum/fallback_cumprod. Results stay correct;
+    # only the "a Triton kernel was emitted" assertion fails.
+    "test_split_cumsum_dynamic_shapes": TestFailure(("cpu", "mps")),
+    "test_split_cumsum_low_prec_dynamic_shapes": TestFailure(("cpu", "mps")),
+    "test_split_cumprod_dynamic_shapes": TestFailure(("cpu", "mps")),
+    "test_split_cumprod_low_prec_dynamic_shapes": TestFailure(("cpu", "mps")),
     "test_split_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_topk_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_unbind_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
@@ -457,7 +465,7 @@ test_failures = {
     "test_rand_like_deterministic_combo_kernels_True_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu"), is_skip=True
     ),
-    "test_repeat_interleave_2_dynamic_shapes": TestFailure(("cpu",)),
+    "test_repeat_interleave_2_dynamic_shapes": TestFailure(("cpu", "mps")),
     "test_slice_mutation2_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu"), is_skip=True
     ),
