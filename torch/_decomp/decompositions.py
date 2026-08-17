@@ -3195,7 +3195,12 @@ def _max_unpoolnd(
     # (aten/src/ATen/native/MaxUnpooling.cpp uses suggest_memory_format),
     # while the CUDA kernel and the 3d kernels always return contiguous output.
     def _restride(t: TensorLike) -> TensorLike:
-        if dim == 2 and self.device.type == "cpu":
+        # MPS matches CPU here: its native 4d kernel also honours
+        # suggest_memory_format, so a channels-last input keeps its layout in
+        # eager. Restricting this to cpu made the compiled result contiguous
+        # while eager stayed channels-last, which inductor reports as a stride
+        # mismatch even though the values agree.
+        if dim == 2 and self.device.type in ("cpu", "mps"):
             return t.contiguous(memory_format=utils.suggest_memory_format(self))
         return t
 
@@ -3217,17 +3222,6 @@ def _max_unpoolnd(
         output.reshape(-1), [indices_flat], self.reshape(-1), accumulate=False
     ).view(output.shape)
     return _restride(result)
-
-    # Match the CPU max_unpool2d layout behavior: the native 4D path resizes
-    # the output with self.suggest_memory_format(), preserving channels-last.
-    # The 3D path uses the default contiguous layout.
-    # For compile, FakeTensor preserves the real device here.
-    # The only edge-case we see is direct meta calls, which follow meta strides
-    # and may differ from CPU eager layout.
-    if dim == 2 and self.ndim == 4 and self.device.type == "cpu":
-        result = result.contiguous(memory_format=utils.suggest_memory_format(self))
-
-    return result
 
 
 @register_decomposition(aten.max_unpool2d)
