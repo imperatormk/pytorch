@@ -335,6 +335,10 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
         # Whether to scale configs at all
         # TODO(coconutruben): remove this once mm_plus_mm and tests support scaling
         self.should_scale_configs: bool = True
+        # Shared-memory budget per block, for devices that cannot report it
+        # through a torch.<device>.get_device_properties field. None means
+        # "unknown", which disables shared-memory-based config pruning.
+        self.shared_memory_per_block: int | None = None
         # List of dictionaries to store the kernel configs. Configs that evaluate to true
         # will be utilised on the target platform. The configs are as follows:
         # (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps)
@@ -1102,6 +1106,8 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
             elif torch.xpu.is_available():
                 props = torch.xpu.get_device_properties()
                 sm_available = int(props.local_mem_size)
+            elif self.shared_memory_per_block is not None:
+                sm_available = self.shared_memory_per_block
             else:
                 return None
         except Exception:
@@ -2230,6 +2236,10 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
 
     def __init__(self) -> None:
         super().__init__()
+        # Metal's per-dispatch threadgroup-memory cap. Apple exposes no
+        # torch.mps property for it, and it is a hardware constant rather than
+        # a per-device one, so it is stated here.
+        self.shared_memory_per_block = 32768
         # (BLOCK_M, BLOCK_N, BLOCK_K, num_stages, num_warps). Tiles are sized so
         # that f32 staging of A (M*K) + B (K*N) plus the mma->blocked output
         # conversion fits inside the 32KB threadgroup budget.

@@ -494,6 +494,7 @@ class TestTritonHeuristics(TestCase):
         from torch._inductor.heuristics.template.triton import (
             CUDAConfigHeuristic,
             GemmConfig,
+            MPSConfigHeuristic,
             ROCmConfigHeuristic,
             XPUConfigHeuristic,
         )
@@ -510,6 +511,8 @@ class TestTritonHeuristics(TestCase):
         ):
             if GPU_TYPE == "xpu":
                 config_heuristic = XPUConfigHeuristic()
+            elif GPU_TYPE == "mps":
+                config_heuristic = MPSConfigHeuristic()
             elif torch.version.hip:
                 config_heuristic = ROCmConfigHeuristic()
             else:
