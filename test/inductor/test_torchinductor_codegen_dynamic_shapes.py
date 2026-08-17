@@ -116,7 +116,7 @@ test_failures = {
         ("cpu", "cuda", "xpu", "mps"), is_skip=True
     ),
     "test_fft_real_input_real_output_dynamic_shapes": TestFailure(
-        ("cpu", "cuda", "xpu"), is_skip=True
+        ("cpu", "cuda", "xpu", "mps"), is_skip=True
     ),
     "test_to_device_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu", "mps"), is_skip=True
@@ -134,7 +134,7 @@ test_failures = {
         ("cpu", "cuda", "xpu", "mps"), is_skip=True
     ),
     "test_cat_empty_1d_negative_dim_zero_output_dynamic_shapes": TestFailure(
-        ("cpu", "cuda", "xpu"), is_skip=True
+        ("cpu", "cuda", "xpu", "mps"), is_skip=True
     ),
     #
     # Failed to find dynamic for loop variable:
@@ -219,7 +219,8 @@ test_failures = {
     "test_linalg_eig_stride_consistency_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu")
     ),
-    "test_adaptive_max_pool2d2_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_adaptive_max_pool2d2_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")),
     # XPU falls back max_pool2d_with_indices_backward to ATen eager (see
     # torch/_decomp/decompositions.py), so no Triton kernel is generated.
     "test_max_pool2d_with_indices_backward_dynamic_shapes": TestFailure(("xpu",)),
@@ -233,14 +234,18 @@ test_failures = {
     ),
     "test_argmax_to_float_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_avg_pool2d7_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
-    "test_avg_pool2d_backward4_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
-    "test_avg_pool3d_backward4_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_avg_pool2d_backward4_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")),
+    "test_avg_pool3d_backward4_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")),
     "test_baddbmm_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_bmm2_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_both_scalars_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_compar_dynamic_shapes": TestFailure(("cpu",)),
-    "test_complex_from_real_imag_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
-    "test_const_int32_to_float_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_complex_from_real_imag_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")),
+    "test_const_int32_to_float_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")),
     "test_conv_backward_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_conv_functional_bn_fuse_dynamic_shapes": TestFailure(("cpu",), is_skip=True),
     "test_convolution2_dynamic_shapes": TestFailure(("cpu",)),
@@ -256,10 +261,10 @@ test_failures = {
     "test_empty_strided_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_index_propagation_to_dtype_inf_dynamic_shapes": TestFailure(("cpu",)),
     "test_unsafe_chunk_empty_tensor_dynamic_shapes": TestFailure(
-        ("cpu", "cuda", "xpu"), is_skip=True
+        ("cpu", "cuda", "xpu", "mps"), is_skip=True
     ),
     "test_max_unpool_empty_output_dynamic_shapes": TestFailure(
-        ("cpu", "cuda", "xpu"), is_skip=True
+        ("cpu", "cuda", "xpu", "mps"), is_skip=True
     ),
     "test_bucketize_nd_tiling_False_dynamic_shapes": TestFailure(("cpu",)),
     "test_bucketize_nd_tiling_True_dynamic_shapes": TestFailure(("cpu",)),
@@ -379,7 +384,8 @@ test_failures = {
     "test_adaptive_avg_pool_with_output_size_0_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu")
     ),
-    "test_zero_element_mutation_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_zero_element_mutation_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu", "mps")),
     "test_custom_op_3_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_cat_uint8_dynamic_shapes": TestFailure(
         ("cpu",)

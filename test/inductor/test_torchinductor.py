@@ -3402,7 +3402,6 @@ class CommonTemplate:
 
         self.common(fn, (torch.randn(4, 4), torch.randn(4, 4)))
 
-    @xfail_if_mps_unimplemented
     @skip_if_halide  # different pow accuracies
     def test_norm_constant_overflow(self):
         def fn(a):
@@ -4165,7 +4164,6 @@ for dtype in (torch.int32, torch.int64):
         )
 
     @skip_if_cpu
-    @xfail_if_mps_unimplemented  # eager MPS div_floor lacks the b==0 guard
     def test_floordiv_div_by_zero_int(self):
         # Integer floor division by zero is undefined behavior on CUDA/Triton.
         # On CPU, integer division by zero correctly raises ZeroDivisionError.
@@ -4177,8 +4175,9 @@ for dtype in (torch.int32, torch.int64):
         # (aten/.../mps/kernels/BinaryKernel.metal) computes a / b directly
         # without the b == 0 guard that c10::div_floor_integer added in
         # PR #178016, so eager-MPS returns -1 for e.g. 1 // 0. The reference
-        # is the divergent path; our codegen is correct. Fixing this needs a
-        # torch eager (Metal kernel) change, so xfail on MPS until then.
+        # is the divergent path; our codegen is correct. This test compares
+        # against a CPU reference, so it passes regardless -- the eager-MPS
+        # divergence is still live and needs a Metal kernel fix.
         def fn(a, b):
             return torch.floor_divide(a, b)
 
@@ -6564,7 +6563,6 @@ for dtype in (torch.int32, torch.int64):
                 check_lowp=False,
             )
 
-    @xfail_if_mps_unimplemented
     @skip_if_gpu_halide  # slow
     def test_adaptive_max_pool2d1(self):
         def fn(x):
@@ -6619,7 +6617,6 @@ for dtype in (torch.int32, torch.int64):
             (torch.randn(2, 4, 4, 4),),
         )
 
-    @xfail_if_mps_unimplemented
     def test_fractional_max_pool2d1(self):
         def fn(x, samples):
             return aten.fractional_max_pool2d(x, (3, 3), (2, 2), samples)
@@ -6628,7 +6625,6 @@ for dtype in (torch.int32, torch.int64):
             fn, (torch.randn(1, 4, 16, 16), torch.rand(1, 4, 2)), check_lowp=False
         )
 
-    @xfail_if_mps_unimplemented
     def test_fractional_max_pool2d2(self):
         # large kernel size without unrolling
 
@@ -6641,7 +6637,6 @@ for dtype in (torch.int32, torch.int64):
             check_lowp=False,
         )
 
-    @xfail_if_mps_unimplemented
     def test_fractional_max_pool2d3(self):
         def fn(x, samples):
             return aten.fractional_max_pool2d(x, (1, 1), (16, 16), samples)
@@ -6650,7 +6645,6 @@ for dtype in (torch.int32, torch.int64):
             fn, (torch.randn(2, 4, 16, 16), torch.rand(2, 4, 2)), check_lowp=False
         )
 
-    @xfail_if_mps_unimplemented
     @config.patch(fallback_random=True)
     @skip_if_halide  # Can only unroll for loops over a constant extent
     def test_fractional_max_pool2d4(self):
@@ -6666,7 +6660,6 @@ for dtype in (torch.int32, torch.int64):
 
         self.common(fn, (torch.randn(1, 4, 16, 16),), check_lowp=False)
 
-    @xfail_if_mps_unimplemented
     def test_fractional_max_pool2d5(self):
         def fn(x, samples):
             return aten.fractional_max_pool2d(x, (3, 3), (1, 1), samples)
@@ -10808,7 +10801,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 (a, b),
             )
 
-    @xfail_if_mps_unimplemented  # dtypes mismatch
     def test_nll_loss_backward(self):
         def fn(a, b, c):
             return aten.nll_loss_backward(
@@ -12764,7 +12756,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             ],
         )
 
-    @xfail_if_mps_unimplemented  # Small tolerances bug
     @skip_if_gpu_halide  # slow
     def test_max_pool2d_with_indices_backward2(self):
         def fn(a, b, c):
@@ -12817,7 +12808,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         )
 
     # From https://github.com/pytorch/torchdynamo/issues/1352
-    @xfail_if_mps_unimplemented  # Small tolerances bug
     @skip_if_halide  # hangs forever
     def test_max_pool2d_with_indices_backward4(self):
         def fn(a, b, c):
@@ -13650,7 +13640,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         ]
         self.common(forward, args, atol=1e-5, rtol=1e-5)
 
-    @xfail_if_mps_unimplemented  # embedding bag
     @requires_gpu()
     @skip_if_halide  # cascading accuracy issues due rsqrt fallback
     def test_tmp_not_defined_issue3(self):
