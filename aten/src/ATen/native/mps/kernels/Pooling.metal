@@ -763,6 +763,116 @@ kernel void avg_pool_backward(
       params.divisor_override);
 }
 
+// Start of the `i`th pooling interval along one dimension, matching
+// at::native::generate_intervals. Every output element recomputes the one
+// interval it needs rather than materializing the whole sequence.
+template <typename T>
+int32_t fractional_pool_start(
+    T sample,
+    int32_t input_size,
+    int32_t output_size,
+    int32_t pool_size,
+    int32_t i) {
+  if (i == output_size - 1) {
+    return input_size - pool_size;
+  }
+  T alpha = static_cast<T>(input_size - pool_size) /
+      static_cast<T>(output_size - 1);
+  return static_cast<int32_t>((static_cast<T>(i) + sample) * alpha) -
+      static_cast<int32_t>(sample * alpha);
+}
+
+template <typename T>
+kernel void fractional_max_pool2d(
+    constant T* input [[buffer(0)]],
+    constant T* random_samples [[buffer(1)]],
+    device T* output [[buffer(2)]],
+    device int64_t* indices [[buffer(3)]],
+    constant FractionalMaxPoolingParams<5>& params [[buffer(4)]],
+    uint tid [[thread_position_in_grid]]) {
+  auto dims = params.dims;
+  auto pooling_dims = params.pooling_dims;
+  auto input_sizes = params.input_sizes.data();
+  auto input_strides = params.input_strides.data();
+  auto output_sizes = params.output_sizes.data();
+  auto output_strides = params.output_strides.data();
+  auto indices_strides = params.indices_strides.data();
+  auto pool_size = params.pool_size.data();
+
+  auto leading_dims = dims - pooling_dims;
+
+  int32_t pooling_dim_indices[3];
+  PoolOffsets offsets = find_pool_offsets(
+      output_sizes,
+      output_strides,
+      indices_strides,
+      input_strides,
+      pooling_dim_indices,
+      dims,
+      leading_dims,
+      /*return_indices=*/true,
+      tid);
+
+  // Two samples per plane, one per pooling dimension. A plane is one flattened
+  // leading-dim coordinate: for (N, C, H, W) that is n * C + c, and for an
+  // unbatched (C, H, W) just c. tid enumerates the output in row-major order,
+  // so dividing out the pooled extents leaves exactly that flattened index.
+  int32_t pooled_numel = 1;
+  for (auto dim = leading_dims; dim < dims; dim++) {
+    pooled_numel *= output_sizes[dim];
+  }
+  int32_t plane = static_cast<int32_t>(tid) / pooled_numel;
+
+  auto in_sizes = input_sizes + leading_dims;
+  auto in_strides = input_strides + leading_dims;
+
+  int32_t start_h = fractional_pool_start<T>(
+      random_samples[2 * plane + 1],
+      in_sizes[0],
+      output_sizes[leading_dims],
+      pool_size[0],
+      pooling_dim_indices[0]);
+  int32_t start_w = fractional_pool_start<T>(
+      random_samples[2 * plane],
+      in_sizes[1],
+      output_sizes[leading_dims + 1],
+      pool_size[1],
+      pooling_dim_indices[1]);
+
+  input += offsets.input_leading;
+
+  T max_val = -::metal::numeric_limits<T>::infinity();
+  int64_t max_index = static_cast<int64_t>(start_h) * in_sizes[1] + start_w;
+
+  for (auto h = start_h; h < start_h + pool_size[0]; h++) {
+    for (auto w = start_w; w < start_w + pool_size[1]; w++) {
+      T val = input[h * in_strides[0] + w * in_strides[1]];
+      if (val > max_val || ::metal::isnan(static_cast<float>(val))) {
+        max_val = val;
+        max_index = static_cast<int64_t>(h) * in_sizes[1] + w;
+      }
+    }
+  }
+
+  output[offsets.output] = max_val;
+  indices[offsets.indices] = max_index;
+}
+
+#define REGISTER_FRACTIONAL_POOL_OP(DTYPE)                     \
+  template [[host_name("fractional_max_pool2d_" #DTYPE)]]      \
+  kernel void fractional_max_pool2d<DTYPE>(                    \
+      constant DTYPE * input [[buffer(0)]],                    \
+      constant DTYPE * random_samples [[buffer(1)]],           \
+      device DTYPE * output [[buffer(2)]],                     \
+      device int64_t* indices [[buffer(3)]],                   \
+      constant FractionalMaxPoolingParams<5>& params           \
+      [[buffer(4)]],                                           \
+      uint tid [[thread_position_in_grid]]);
+
+REGISTER_FRACTIONAL_POOL_OP(float);
+REGISTER_FRACTIONAL_POOL_OP(half);
+REGISTER_FRACTIONAL_POOL_OP(bfloat);
+
 #define REGISTER_POOL_OP(DTYPE)                                               \
   template [[host_name("max_pool_" #DTYPE)]] kernel void max_pool<DTYPE>(     \
       constant DTYPE * input [[buffer(0)]],                                   \

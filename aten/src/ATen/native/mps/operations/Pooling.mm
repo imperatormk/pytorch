@@ -1,6 +1,7 @@
 //  Copyright © 2022 Apple Inc.
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/mps/MPSProfiler.h>
+#include <ATen/native/FractionalMaxPooling.h>
 #include <ATen/native/Pool.h>
 #include <ATen/native/mps/OperationUtils.h>
 #include <ATen/native/mps/kernels/Pooling.h>
@@ -16,6 +17,8 @@
 #include <ATen/ops/avg_pool2d_native.h>
 #include <ATen/ops/avg_pool3d_backward_native.h>
 #include <ATen/ops/avg_pool3d_native.h>
+#include <ATen/ops/fractional_max_pool2d_backward_native.h>
+#include <ATen/ops/fractional_max_pool2d_native.h>
 #include <ATen/ops/max_pool2d_backward_native.h>
 #include <ATen/ops/max_pool2d_native.h>
 #include <ATen/ops/max_pool2d_with_indices_backward_native.h>
@@ -560,6 +563,89 @@ static void max_pool_with_indices_backward_out_mps_template(Tensor& grad_input,
 
       mtl_dispatch1DJob(computeEncoder, maxPoolPSO, numThreads);
       getMPSProfiler().endProfileKernel(maxPoolPSO);
+    }
+  });
+}
+
+static void fractional_max_pool2d_out_mps_template(const Tensor& input,
+                                                   const Tensor& random_samples,
+                                                   IntArrayRef pool_size,
+                                                   const Tensor& output,
+                                                   const Tensor& indices,
+                                                   const std::string& op_name) {
+  const int32_t pooling_dims = 2;
+  const auto dims = static_cast<int32_t>(input.ndimension());
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+  const auto numThreads = output.numel();
+
+  FractionalMaxPoolingParams<5> params;
+  params.dims = dims;
+  params.pooling_dims = pooling_dims;
+
+  for (const auto dim : c10::irange(dims)) {
+    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(input.size(dim));
+    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(input.stride(dim));
+    params.output_sizes[dim] = safe_downcast<int32_t, int64_t>(output.size(dim));
+    params.output_strides[dim] = safe_downcast<int32_t, int64_t>(output.stride(dim));
+    params.indices_strides[dim] = safe_downcast<int32_t, int64_t>(indices.stride(dim));
+  }
+
+  for (const auto dim : c10::irange(pooling_dims)) {
+    params.pool_size[dim] = safe_downcast<int32_t, int64_t>(pool_size[dim]);
+  }
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      auto PSO = lib.getPipelineStateForFunc("fractional_max_pool2d_" + scalarToMetalTypeString(input));
+
+      getMPSProfiler().beginProfileKernel(PSO, op_name, {input});
+      [computeEncoder setComputePipelineState:PSO];
+      mtl_setArgs(computeEncoder, input, random_samples, output, indices, params);
+
+      mtl_dispatch1DJob(computeEncoder, PSO, numThreads);
+      getMPSProfiler().endProfileKernel(PSO);
+    }
+  });
+}
+
+// Scatters each grad_output element back to the input position its index names.
+// Shared by any max-pool variant whose forward recorded flat indices; unlike
+// max_pool_with_indices_backward_out_mps_template it takes no kernel geometry,
+// which fractional pooling does not have in that form.
+static void max_pool_indices_backward_out_mps_template(const Tensor& grad_input,
+                                                       const Tensor& grad_output,
+                                                       const Tensor& indices,
+                                                       const int32_t pooling_dims,
+                                                       const std::string& op_name) {
+  const auto dims = static_cast<int32_t>(grad_input.ndimension());
+  MPSStream* mpsStream = getCurrentMPSStream();
+  const auto numThreads = grad_output.numel();
+
+  PoolingBackwardParams<5> params;
+  params.dims = dims;
+  params.pooling_dims = pooling_dims;
+
+  for (const auto dim : c10::irange(dims)) {
+    params.grad_input_sizes[dim] = safe_downcast<int32_t, int64_t>(grad_input.size(dim));
+    params.grad_input_strides[dim] = safe_downcast<int32_t, int64_t>(grad_input.stride(dim));
+    params.grad_output_sizes[dim] = safe_downcast<int32_t, int64_t>(grad_output.size(dim));
+    params.grad_output_strides[dim] = safe_downcast<int32_t, int64_t>(grad_output.stride(dim));
+    params.indices_strides[dim] = safe_downcast<int32_t, int64_t>(indices.stride(dim));
+  }
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      auto PSO = lib.getPipelineStateForFunc("max_pool_backward_" + scalarToMetalTypeString(grad_output));
+
+      getMPSProfiler().beginProfileKernel(PSO, op_name, {grad_output});
+      [computeEncoder setComputePipelineState:PSO];
+      mtl_setArgs(computeEncoder, grad_input, grad_output, indices, params);
+
+      mtl_dispatch1DJob(computeEncoder, PSO, numThreads);
+      getMPSProfiler().endProfileKernel(PSO);
     }
   });
 }
@@ -1316,6 +1402,38 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_mps)(const Tensor& grad_output,
                                           divisor_override,
                                           /*pooling_dims=*/3,
                                           "avg_pool3d_backward");
+}
+
+TORCH_IMPL_FUNC(fractional_max_pool2d_out_mps)
+(const Tensor& input,
+ IntArrayRef pool_size,
+ IntArrayRef output_size,
+ const Tensor& random_samples,
+ const Tensor& output,
+ const Tensor& indices) {
+  fractional_max_pool_check_shape</*ndim*/ 2>(input, random_samples);
+  TORCH_CHECK_NOT_IMPLEMENTED(!c10::isComplexType(input.scalar_type()),
+                              "Fractional max pooling for complex is not supported for MPS");
+  if (output.numel() == 0) {
+    return;
+  }
+  mps::fractional_max_pool2d_out_mps_template(
+      input, random_samples.contiguous(), pool_size, output, indices, "fractional_max_pool2d");
+}
+
+TORCH_IMPL_FUNC(fractional_max_pool2d_backward_mps)
+(const Tensor& grad_output,
+ const Tensor& input,
+ IntArrayRef pool_size,
+ IntArrayRef output_size,
+ const Tensor& indices,
+ const Tensor& grad_input) {
+  grad_input.zero_();
+  if (grad_output.numel() == 0) {
+    return;
+  }
+  mps::max_pool_indices_backward_out_mps_template(
+      grad_input, grad_output, indices, /*pooling_dims=*/2, "fractional_max_pool2d_backward");
 }
 
 } // namespace at::native

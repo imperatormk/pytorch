@@ -39,6 +39,18 @@ struct AvgPoolingParams {
 };
 
 template <unsigned N = 5, typename idx_type_t = int32_t>
+struct FractionalMaxPoolingParams {
+  int32_t dims;
+  int32_t pooling_dims;
+  ::c10::metal::array<idx_type_t, N> input_sizes;
+  ::c10::metal::array<idx_type_t, N> input_strides;
+  ::c10::metal::array<idx_type_t, N> output_sizes;
+  ::c10::metal::array<idx_type_t, N> output_strides;
+  ::c10::metal::array<idx_type_t, N> indices_strides;
+  ::c10::metal::array<idx_type_t, N - 2> pool_size;
+};
+
+template <unsigned N = 5, typename idx_type_t = int32_t>
 struct PoolingBackwardParams {
   int32_t dims;
   int32_t pooling_dims;
