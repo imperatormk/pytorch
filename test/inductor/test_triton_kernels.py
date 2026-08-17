@@ -95,6 +95,14 @@ if HAS_GPU:
             fast_dividef,
             fast_dividef as my_fast_dividef,
         )
+    else:
+        # Any other GPU backend: the vendor-neutral libdevice carries the same
+        # symbols, and without this the name is simply unbound and every test
+        # that calls it dies with NameError inside the kernel.
+        from triton.language.extra.libdevice import (  # @manual
+            fast_dividef,
+            fast_dividef as my_fast_dividef,
+        )
 
     def _triton_get_ast_equal_to_str(params):
         try:
