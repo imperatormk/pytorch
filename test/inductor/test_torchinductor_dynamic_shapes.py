@@ -68,13 +68,6 @@ test_failures = {
     "test_AllenaiLongformerBase_repro_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu"), is_skip=True
     ),
-    "test_reduction2_dynamic_shapes": TestFailure(("mps",)),
-    "test_reduction3_dynamic_shapes": TestFailure(("mps",)),
-    "test_reduction5_dynamic_shapes": TestFailure(("mps",)),
-    "test_argmax_argmin_with_duplicates_dynamic_shapes": TestFailure(("mps",)),
-    "test_index_propagation_abs_dynamic_shapes": TestFailure(("mps",)),
-    "test_index_propagation_floordiv_dynamic_shapes": TestFailure(("mps",)),
-    "test_index_propagation_remainder_dynamic_shapes": TestFailure(("mps",)),
     # This fails on periodic CPU shards but passes on other CPU configurations,
     # so skip it instead of producing unexpected successes.
     "test_index_propagation_to_dtype_inf_dynamic_shapes": TestFailure(
