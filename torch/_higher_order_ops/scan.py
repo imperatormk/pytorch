@@ -815,6 +815,14 @@ class ScanAutogradImpl:
         n_carry = len(self.init)
 
         grad_carry, grad_ys = grad_fw_outputs[:n_carry], grad_fw_outputs[n_carry:]
+        # An upstream reduction hands back a broadcast gradient whose strides are
+        # all 0 (sum() expands a single value), while the backward body yields a
+        # densely strided carry. scan requires init and body output to agree, so
+        # densify the init here rather than let the mismatch surface as a
+        # metadata error once the scan is lowered to a while_loop.
+        grad_carry = tuple(
+            t.contiguous() if isinstance(t, torch.Tensor) else t for t in grad_carry
+        )
         additional_inputs_tensor_masks = [
             bool(isinstance(t, torch.Tensor)) for t in self.additional_inputs
         ]

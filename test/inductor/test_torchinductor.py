@@ -11978,11 +11978,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
         self.common(fn, [], assert_equal=False)
 
-    # `requires_gpu` otherwise
-    # RuntimeError: pin_memory=True requires a CUDA or other accelerator backend;
-    # no pinned memory allocator is available on this system.
-    @requires_gpu()
-    @unittest.skipIf(IS_MACOS, "fails on macos")
     @parametrize(
         "constructor_case",
         [
@@ -12025,8 +12020,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         self.assertTrue(result.is_pinned())
         self.assertEqual(result.shape, expected_shape)
 
-    @requires_gpu()
-    @unittest.skipIf(IS_MACOS, "fails on macos")
     @dynamo_config.patch(assume_static_by_default=False)
     @config.patch({"fx_graph_cache": False})
     def test_tensor_pin_memory_dynamic_scalar_list(self):
