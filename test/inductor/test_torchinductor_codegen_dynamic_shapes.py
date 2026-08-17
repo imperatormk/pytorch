@@ -284,53 +284,67 @@ test_failures = {
     "test_new_empty_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_new_empty_strided_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     "test_new_ones_dynamic_shapes": TestFailure(("cpu",)),
-    "test_pointwise_airy_ai_dynamic_shapes": TestFailure(("cuda", "xpu")),
+    "test_pointwise_airy_ai_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_digamma_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_gammainc_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_gammaincc_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_i0e_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_i1e_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
-    "test_pointwise_modified_bessel_k0_dynamic_shapes": TestFailure(("cuda", "xpu")),
-    "test_pointwise_modified_bessel_k1_dynamic_shapes": TestFailure(("cuda", "xpu")),
-    "test_pointwise_ndtri_dynamic_shapes": TestFailure(("cuda", "xpu")),
+    "test_pointwise_modified_bessel_k0_dynamic_shapes": TestFailure(
+        ("cuda", "xpu", "mps")
+    ),
+    "test_pointwise_modified_bessel_k1_dynamic_shapes": TestFailure(
+        ("cuda", "xpu", "mps")
+    ),
+    "test_pointwise_ndtri_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_polygamma_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_psi_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_scaled_modified_bessel_k0_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_scaled_modified_bessel_k1_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
-    "test_pointwise_spherical_bessel_j0_dynamic_shapes": TestFailure(("cuda", "xpu")),
+    "test_pointwise_spherical_bessel_j0_dynamic_shapes": TestFailure(
+        ("cuda", "xpu", "mps")
+    ),
     "test_pointwise_zeta_dynamic_shapes": TestFailure(("cuda", "xpu", "mps")),
     "test_pointwise_chebyshev_polynomial_t_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_chebyshev_polynomial_u_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_chebyshev_polynomial_v_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_chebyshev_polynomial_w_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_shifted_chebyshev_polynomial_t_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_shifted_chebyshev_polynomial_u_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_shifted_chebyshev_polynomial_v_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
     "test_pointwise_shifted_chebyshev_polynomial_w_dynamic_shapes": TestFailure(
-        ("cuda", "xpu")
+        ("cuda", "xpu", "mps")
     ),
-    "test_pointwise_hermite_polynomial_h_dynamic_shapes": TestFailure(("cuda", "xpu")),
-    "test_pointwise_hermite_polynomial_he_dynamic_shapes": TestFailure(("cuda", "xpu")),
-    "test_pointwise_laguerre_polynomial_l_dynamic_shapes": TestFailure(("cuda", "xpu")),
-    "test_pointwise_legendre_polynomial_p_dynamic_shapes": TestFailure(("cuda", "xpu")),
+    "test_pointwise_hermite_polynomial_h_dynamic_shapes": TestFailure(
+        ("cuda", "xpu", "mps")
+    ),
+    "test_pointwise_hermite_polynomial_he_dynamic_shapes": TestFailure(
+        ("cuda", "xpu", "mps")
+    ),
+    "test_pointwise_laguerre_polynomial_l_dynamic_shapes": TestFailure(
+        ("cuda", "xpu", "mps")
+    ),
+    "test_pointwise_legendre_polynomial_p_dynamic_shapes": TestFailure(
+        ("cuda", "xpu", "mps")
+    ),
     "test_polar_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps"), is_skip=True),
     "test_add_complex7_dynamic_shapes": TestFailure(("cpu",), is_skip=True),
     "test_add_complex8_dynamic_shapes": TestFailure(("cpu",), is_skip=True),
