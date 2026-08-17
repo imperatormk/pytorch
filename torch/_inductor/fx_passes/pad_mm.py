@@ -78,7 +78,11 @@ def get_alignment_size_dtype(dtype: torch.dtype) -> int:
 
 
 def check_device(a: Tensor, b: Tensor) -> bool:
-    return (a.is_cuda and b.is_cuda) or (a.is_xpu and b.is_xpu)
+    return (
+        (a.is_cuda and b.is_cuda)
+        or (a.is_xpu and b.is_xpu)
+        or (a.is_mps and b.is_mps)
+    )
 
 
 def check_dtype(a: Tensor, b: Tensor) -> bool:
