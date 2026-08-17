@@ -1002,6 +1002,11 @@ def is_valid_mm_plus_mm(match: Match):
     extra_check=is_valid_mm_plus_mm,
 )
 def mm_plus_mm(match: Match, mat1, mat2, mat3, mat4):
+    if not all(isinstance(m, ir.IRNode) for m in (mat1, mat2, mat3, mat4)):
+        # Inside a HOP subgraph these arrive as FakeTensors rather than lowered
+        # IR, and the template needs get_dtype()/make_loader(). Compute it
+        # directly instead of failing the whole compile.
+        return torch.mm(mat1, mat2) + torch.mm(mat3, mat4)
     return inductor.kernel.mm_plus_mm.tuned_mm_plus_mm(mat1, mat2, mat3, mat4)
 
 
