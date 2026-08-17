@@ -533,7 +533,10 @@ def _nll_loss_backward(
 
     grad_output = torch.where(target != ignore_index, grad_output, 0)
 
-    return grad_input * grad_output
+    # The ATen kernel returns self.dtype. A total_weight or weight in a wider
+    # dtype promotes grad_output above it, so cast back rather than letting the
+    # promotion escape into the result.
+    return (grad_input * grad_output).to(self.dtype)
 
 
 @register_decomposition(aten.glu_backward)
