@@ -302,7 +302,12 @@ def is_mm_compute_bound(M: int, K: int, N: int, dtype: torch.dtype) -> bool:
         dtype is torch.bfloat16
         and K > M
         and K > N
-        and (torch.xpu.is_available() or torch.cuda.get_device_capability() < (9, 0))
+        and (
+            torch.xpu.is_available()
+            or torch.mps.is_available()
+            # get_device_capability() is CUDA-only and asserts without it.
+            or (torch.cuda.is_available() and torch.cuda.get_device_capability() < (9, 0))
+        )
     ):  # doesn't repro on h100s:
         return True
 
@@ -625,7 +630,7 @@ def _should_pad(
 
         if op is torch.ops.aten.addmm:
             input_pad = None
-            if input is not None and (input.is_cuda or input.is_xpu):
+            if input is not None and (input.is_cuda or input.is_xpu or input.is_mps):
                 input_pad = torch.randn_like(input)
             fns.append(
                 lambda: pad_addmm(
