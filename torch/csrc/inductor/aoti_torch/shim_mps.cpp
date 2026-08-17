@@ -1,4 +1,5 @@
 #include <ATen/native/mps/MetalShaderLibrary.h>
+#include <ATen/ops/from_blob.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim_mps.h>
 #include <torch/csrc/inductor/aoti_torch/utils.h>
 
@@ -15,6 +16,21 @@ AOTITorchError aoti_torch_mps_set_arg_tensor(
     }
     auto func = reinterpret_cast<at::native::mps::MetalKernelFunction*>(handle);
     func->setArg(idx, *t);
+  });
+}
+
+AOTITorchError aoti_torch_mps_set_arg_buffer(
+    AOTIMetalKernelFunctionHandle handle,
+    unsigned idx,
+    void* ptr) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    auto func = reinterpret_cast<at::native::mps::MetalKernelFunction*>(handle);
+    // for_blob re-attaches the pointer to its MPSAllocator buffer without
+    // taking ownership; only the buffer binding is used, never the metadata.
+    auto t = at::for_blob(ptr, {1})
+                 .options(at::TensorOptions().device(at::kMPS).dtype(at::kByte))
+                 .make_tensor();
+    func->setArg(idx, t);
   });
 }
 

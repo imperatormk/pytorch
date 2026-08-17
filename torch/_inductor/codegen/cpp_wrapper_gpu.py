@@ -611,12 +611,16 @@ class DeferredTritonCallWrapper:
         )
         call_args_str = self._generate_lazy_scratch(prefix, wrapper, call_args_str)
 
+        needs_arg_kinds = wrapper.device_codegen.launch_needs_arg_kinds()
+        n_args = call_args_str.count(",") + 1 if call_args_str else 0
         common_launch_args = (
             f"grid_0, grid_1, grid_2,"
             f" {kernel_name}_result.num_warps,"
             f" {kernel_name}_result.shared_mem,"
             f" kernel_args_, stream_"
         )
+        if needs_arg_kinds:
+            common_launch_args += f", kernel_arg_is_ptr_, {n_args}"
         # stream_ comes from the generated wrapper signature on both JIT and
         # AOTI sides.
         launch_kernel_args = [
@@ -629,6 +633,11 @@ class DeferredTritonCallWrapper:
 
         # kernel_args_ is consumed by both JIT and AOT launchKernel calls.
         prefix.writeline(f"void* kernel_args_[] = {{{call_args_str}}};")
+        if needs_arg_kinds:
+            kinds = getattr(wrapper, "last_args_are_ptr", None) or []
+            kinds = (list(kinds) + [False] * n_args)[:n_args]
+            kinds_str = ", ".join("true" if k else "false" for k in kinds)
+            prefix.writeline(f"bool kernel_arg_is_ptr_[] = {{{kinds_str}}};")
         enable_kernel_profile = config.cpp.enable_kernel_profile and sys.platform in [
             "linux",
             "win32",
@@ -1592,6 +1601,10 @@ static inline void ensure_triton_kernel_compiles_started() {{
                           arg injected at the front of the arg list.
         """
         new_args: list[str] = []
+        # Backends whose launch ABI distinguishes buffers from scalars (MPS)
+        # read this alongside new_args; CUDA-likes pass everything by address.
+        arg_is_ptr: list[bool] = []
+        self.last_args_are_ptr = arg_is_ptr
 
         def process_tma_stable_arg(arg, arg_type, arg_signature, var_name):
             # [Note: AOTI TMA Stable handling]
@@ -1663,7 +1676,12 @@ static inline void ensure_triton_kernel_compiles_started() {{
         for arg, arg_type, arg_signature in zip_longest(
             call_args, arg_types, arg_signatures
         ):
+            before = len(new_args)
             process_args(arg, arg_type, arg_signature)
+            is_ptr = isinstance(arg_type, torch_dtype) and not signature_is_tma_desc(
+                arg_signature
+            )
+            arg_is_ptr.extend([is_ptr] * (len(new_args) - before))
 
         for scratch_name, workspace_size in (scratch_spaces or {}).items():
             if (

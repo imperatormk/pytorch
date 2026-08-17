@@ -82,6 +82,24 @@ class CppWrapperMps(CppWrapperGpu):
         if device.type != "mps":
             raise AssertionError(f"expected device.type == 'mps', got {device.type}")
 
+        if triton:
+            # Triton kernels ship a precompiled metallib; only hand-written
+            # MetalKernels carry the MSL source this path compiles.
+            return super()._generate_kernel_call_helper(
+                kernel_name,
+                call_args,
+                device=device,
+                triton=triton,
+                arg_types=arg_types,
+                raw_keys=raw_keys,
+                raw_args=raw_args,
+                triton_meta=triton_meta,
+                inductor_meta=inductor_meta,
+                graph_name=graph_name,
+                original_fxnode_name=original_fxnode_name,
+                current_stream_idx=current_stream_idx,
+            )
+
         if arg_types is None:
             raise AssertionError("expected arg_types to not be None")
 
@@ -89,7 +107,9 @@ class CppWrapperMps(CppWrapperGpu):
         for idx, (arg, arg_type) in enumerate(zip(call_args[:-2], arg_types[:-2])):
             if isinstance(arg_type, torch.dtype):
                 new_args.append(f"aoti_torch_mps_set_arg_tensor(handle, {idx}, {arg});")
-            elif arg_type in (int, sympy.core.symbol.Symbol):
+            elif isinstance(arg_type, type) and issubclass(
+                arg_type, (sympy.Expr, int)
+            ):
                 new_args.append(f"aoti_torch_mps_set_arg_int(handle, {idx}, {arg});")
             else:
                 raise NotImplementedError(
@@ -115,9 +135,12 @@ class CppWrapperMps(CppWrapperGpu):
             else:
                 single_value = threads_str
 
+            # Symbolic grids render as signed expressions, so cast explicitly
+            # rather than relying on overload resolution.
             if group_size is None:
                 new_args.append(
-                    f"aoti_torch_mps_dispatch_single(handle, {single_value});"
+                    "aoti_torch_mps_dispatch_single(handle, "
+                    f"static_cast<uint64_t>({single_value}));"
                 )
             else:
                 # Extract group size value if it's also in braces
@@ -127,7 +150,9 @@ class CppWrapperMps(CppWrapperGpu):
                 else:
                     group_size_value = group_size_str
                 new_args.append(
-                    f"aoti_torch_mps_dispatch_single_with_group_size(handle, {single_value}, {group_size_value});"
+                    "aoti_torch_mps_dispatch_single_with_group_size(handle, "
+                    f"static_cast<uint64_t>({single_value}), "
+                    f"static_cast<uint64_t>({group_size_value}));"
                 )
         else:
             # Handle array case - need to convert initializer list to array
@@ -264,6 +289,10 @@ class CppWrapperMps(CppWrapperGpu):
             if not isinstance(line, KernelCallLine):
                 continue
             if line.device.type != "mps":
+                continue
+            if line.triton:
+                # Triton kernels are loaded from a metallib, not from the MSL
+                # source constant this handle compiles.
                 continue
 
             # Extract library name from kernel name (e.g., "mps_lib_0" from kernel calls)

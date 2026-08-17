@@ -67,6 +67,14 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_dispatch_array_with_group_size(
     size_t group_size_size);
 #endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_10_0
 
+// Binds a device allocation (an MPSAllocator data_ptr) as a buffer argument.
+// Triton kernels receive their pointer args this way; the void*[] launch ABI
+// has no tensor to hand to set_arg_tensor.
+AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mps_set_arg_buffer(
+    AOTIMetalKernelFunctionHandle func,
+    unsigned idx,
+    void* ptr);
+
 AOTI_TORCH_EXPORT AOTITorchError
 aoti_torch_mps_malloc(void** buffer, size_t num_bytes);
 

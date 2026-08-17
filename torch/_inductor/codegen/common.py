@@ -359,6 +359,14 @@ class DeviceOpOverrides:
     def kernel_driver(self) -> str:
         raise NotImplementedError
 
+    def launch_needs_arg_kinds(self) -> bool:
+        """True when launchKernel must tell buffer args from scalar ones.
+
+        CUDA-likes take every arg by address; Metal binds buffers and copies
+        scalars, so it needs the distinction the void*[] erases.
+        """
+        return False
+
     def cpp_stream_type(self) -> str:
         raise NotImplementedError
 

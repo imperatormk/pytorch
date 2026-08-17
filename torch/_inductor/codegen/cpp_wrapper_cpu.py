@@ -942,8 +942,6 @@ class CppWrapperCpu(PythonWrapperCodegen):
 
     def _write_aoti_entry_point_signature(self):
         """Emit the AOTI entry point: run_impl method and _const_run_impl."""
-        self.codegen_additional_funcs()
-
         if V.graph.const_module:
             # In dual-wrapper-mode, the const graph's JIT output is emitted separately,
             # while its AOTI body is spliced below into the main AOTI source.
@@ -1018,6 +1016,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
         JIT: inductor_entry_impl free function.
         Dual-wrapper-mode: both signatures, to their respective buffers.
         """
+        # Device support code (e.g. MPS shader-library handles) is referenced by
+        # kernel calls in both modes, so it cannot live under the AOTI branch.
+        self.codegen_additional_funcs()
         if V.graph.aot_mode:
             self._write_aoti_entry_point_signature()
         self._write_jit_entry_point_signature()

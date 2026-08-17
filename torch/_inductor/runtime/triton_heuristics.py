@@ -2186,7 +2186,7 @@ class CachingAutotuner(KernelInterface):
 
         from torch._inductor.codecache import CudaKernelParamCache
 
-        bin_type = {"hip": "hsaco", "xpu": XPU_KERNEL_FORMAT}.get(
+        bin_type = {"hip": "hsaco", "xpu": XPU_KERNEL_FORMAT, "mps": "metallib"}.get(
             self.device_props.type, "cubin"
         )
         kernel_binary = binary.asm[bin_type]
