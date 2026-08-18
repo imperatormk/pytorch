@@ -1740,6 +1740,10 @@ static inline void ensure_triton_kernel_compiles_started() {{
                 scratch_def, scratch_var = scratch
                 code.writelines([maybe_hipify_code_wrapper(x) for x in scratch_def])
                 new_args.append(f"&{scratch_var}")
+                # Scratch workspaces are device pointers, so they bind as
+                # buffers rather than joining the packed scalars.
+                arg_is_ptr.append(True)
+                arg_sizes.append(f"sizeof({scratch_var})")
 
         return ", ".join(new_args)
 

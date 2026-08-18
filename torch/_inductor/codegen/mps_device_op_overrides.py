@@ -108,6 +108,9 @@ class MPSDeviceOpOverrides(DeviceOpOverrides):
                         continue;
                     }
                     const unsigned sz = scalar_size[i];
+                    if (sz == 0) {
+                        continue;
+                    }
                     packed.resize((packed.size() + sz - 1) / sz * sz);
                     const auto* bytes = static_cast<const unsigned char*>(args[i]);
                     packed.insert(packed.end(), bytes, bytes + sz);
