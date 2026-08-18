@@ -21,7 +21,6 @@ from torch._inductor.test_case import run_tests, TestCase
 from torch.testing import FileCheck
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
-    IS_MACOS,
     parametrize,
     skipIfRocm,
     skipIfXpu,
@@ -51,7 +50,6 @@ def tearDownModule():
         _PRIOR_FP32_MATMUL_PRECISION = None
 
 
-@unittest.skipIf(IS_MACOS, "TODO: mac")
 @unittest.skipUnless(HAS_GPU and HAS_TRITON, "requires GPU and Triton")
 class TestCustomOpAutoTune(TestCase):
     """Test custom operation autotuning functionality."""
@@ -708,10 +706,6 @@ class TestCustomOpAutoTune(TestCase):
     @skipIfXpu
     def test_config_patching_in_generated_code(self):
         """Test that coordinate_descent_tuning config_patches flows through to generated code."""
-        if self.device != "cuda":
-            self.skipTest(
-                "coordinate_descent_tuning test requires CUDA for Triton codegen"
-            )
 
         test_op_name = f"test_lib::coord_descent_{id(self)}"
 
@@ -770,10 +764,6 @@ class TestCustomOpAutoTune(TestCase):
     )
     def test_split_config_patching_in_generated_code(self):
         """Test that coordinate_descent_tuning config_patches flows through to generated code."""
-        if self.device != "cuda":
-            self.skipTest(
-                "coordinate_descent_tuning test requires CUDA for Triton codegen"
-            )
 
         test_op_name = f"test_lib::coord_descent_{id(self)}"
 

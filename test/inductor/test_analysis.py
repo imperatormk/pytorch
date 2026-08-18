@@ -285,11 +285,16 @@ class TestUtils(TestCase):
 
 def has_supported_gpu():
     """Check if any GPU platform with Triton support is available."""
-    return torch.xpu.is_available() or SM80OrLater or torch.version.hip
+    return (
+        torch.xpu.is_available()
+        or SM80OrLater
+        or torch.version.hip
+        or torch.backends.mps.is_available()
+    )
 
 
 class TestAnalysis(TestCase):
-    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, or ROCm")
+    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, ROCm, or MPS")
     def test_noop(self):
         with (
             patch("sys.stdout", new_callable=StringIO) as mock_stdout,
@@ -298,7 +303,7 @@ class TestAnalysis(TestCase):
             main()
             self.assertEqual(mock_stdout.getvalue(), "")
 
-    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, or ROCm")
+    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, ROCm, or MPS")
     @dtypes(torch.float, torch.double, torch.float16)
     @xfailIfNoAcceleratorTriton
     def test_diff(self, device, dtype):
@@ -343,14 +348,13 @@ class TestAnalysis(TestCase):
         ):
             main()
 
-    @skipIf(not (SM80OrLater or TEST_XPU), "Requires SM80 or XPU")
     def test_augment_trace_helper_unit(self):
         js = json.loads(example_profile)
         out_profile = _augment_trace_helper(js)
         expected_flops = [4096000, 4096000, 223552896, 223552896, 0, 0, 0]
         verify_flops(self, expected_flops, out_profile)
 
-    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, or ROCm")
+    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, ROCm, or MPS")
     @dtypes(torch.float, torch.double, torch.float16)
     @parametrize(
         "maxat",
@@ -404,7 +408,7 @@ class TestAnalysis(TestCase):
 
         verify_triton(comp_omni)
 
-    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, or ROCm")
+    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, ROCm, or MPS")
     @dtypes(torch.float, torch.float16)
     @parametrize(
         "maxat",
@@ -517,7 +521,7 @@ class TestAnalysis(TestCase):
         self.assertTrue(seen_baddbmm)
         self.assertTrue(seen_conv)
 
-    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, or ROCm")
+    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, ROCm, or MPS")
     @dtypes(torch.float, torch.float16)
     @parametrize(
         "maxat",
@@ -567,7 +571,7 @@ class TestAnalysis(TestCase):
             if event["name"] == "triton_poi_fused_add_randn_sin_0":
                 event["args"]["kernel_num_gb"] = 0.002097168
 
-    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, or ROCm")
+    @skipIf(not has_supported_gpu(), "Requires XPU, CUDA SM80+, ROCm, or MPS")
     @dtypes(torch.float, torch.float16)
     @xfailIfNoAcceleratorTriton
     def test_combine_profiles(self, device, dtype):
