@@ -350,8 +350,8 @@ def tuned_mm(mat1, mat2, out_dtype=None, *, layout=None):
             lambda: "input dtypes must be the same",
         )
         torch._check(
-            mat1.get_device().type in ("cuda", "xpu"),
-            lambda: "out_dtype is only supported for CUDA or XPU",
+            mat1.get_device().type in ("cuda", "xpu", "mps"),
+            lambda: "out_dtype is only supported for CUDA, XPU or MPS",
         )
         torch._check(
             out_dtype == input_dtype

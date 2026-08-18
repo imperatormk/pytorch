@@ -4163,11 +4163,13 @@
   dispatch:
     CUDA: _mm_dtype_cuda
     XPU: _mm_dtype_xpu
+    MPS: _mm_dtype_mps
 
 - func: mm.dtype_out(Tensor self, Tensor mat2, ScalarType out_dtype, *, Tensor(a!) out) -> Tensor(a!)
   dispatch:
     CUDA: _mm_dtype_out_cuda
     XPU: _mm_dtype_out_xpu
+    MPS: _mm_dtype_out_mps
 
 - func: _int_mm(Tensor self, Tensor mat2) -> Tensor
   dispatch:

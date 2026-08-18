@@ -2300,6 +2300,34 @@ TORCH_IMPL_FUNC(bmm_out_mps)(const Tensor& batch1, const Tensor& batch2, const T
   mps::bmm_out_mps_impl(batch1, batch2, const_cast<Tensor&>(result));
 }
 
+Tensor& _mm_dtype_out_mps(const Tensor& self, const Tensor& mat2, const at::ScalarType out_dtype, Tensor& out) {
+  TORCH_CHECK(self.dim() == 2, "self must be a 2D tensor");
+  TORCH_CHECK(mat2.dim() == 2, "mat2 must be a 2D tensor");
+  TORCH_CHECK(self.size(1) == mat2.size(0),
+              "Expected size for first two dimensions of mat2 tensor to be: [",
+              self.size(1),
+              ", *] but got: [",
+              mat2.size(0),
+              ", ",
+              mat2.size(1),
+              "].");
+  TORCH_CHECK(self.scalar_type() == mat2.scalar_type(), "self and mat2 must have the same dtype");
+  TORCH_CHECK(out_dtype == out.scalar_type(), "out_dtype must match the out tensor dtype");
+  TORCH_CHECK(out_dtype == self.scalar_type() ||
+                  (out_dtype == at::ScalarType::Float &&
+                   (self.scalar_type() == at::ScalarType::Half || self.scalar_type() == at::ScalarType::BFloat16)),
+              "out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs");
+  if (out_dtype == self.scalar_type()) {
+    return mps::mm_out_mps_impl(self, mat2, out);
+  }
+  return mps::mm_out_mps_impl(self.to(at::kFloat), mat2.to(at::kFloat), out);
+}
+
+Tensor _mm_dtype_mps(const Tensor& self, const Tensor& mat2, const at::ScalarType out_dtype) {
+  Tensor out = at::empty({self.size(0), mat2.size(1)}, self.options().dtype(out_dtype));
+  return _mm_dtype_out_mps(self, mat2, out_dtype, out);
+}
+
 Tensor& _bmm_out_dtype_mps(const Tensor& batch1, const Tensor& batch2, const at::ScalarType out_dtype, Tensor& out) {
   TORCH_CHECK(batch1.dim() == 3, "batch1 must be a 3D tensor");
   TORCH_CHECK(batch2.dim() == 3, "batch2 must be a 3D tensor");

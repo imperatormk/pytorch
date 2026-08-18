@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 @register_template_heuristic(aten_mm.uid, None)
 @register_template_heuristic(aten_mm_dtype.uid, "cuda")
 @register_template_heuristic(aten_mm_dtype.uid, "xpu")
+@register_template_heuristic(aten_mm_dtype.uid, "mps")
 @register_template_heuristic(aten__fp8_mm.uid, None)
 @register_template_heuristic(aten__int_mm.uid, None)
 @register_template_heuristic(aten_bmm.uid, None)
