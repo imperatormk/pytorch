@@ -3596,7 +3596,7 @@ class ForeachKernelSchedulerNode(FusedSchedulerNode):
             )
             for node in nodes:
                 device = node.get_device()
-                if device and (device.type == "mps" or device.type == "cpu"):
+                if device and device.type == "cpu":
                     continue
 
                 # exclude nodes that read from FusedMixOrderReductions output buffers'
