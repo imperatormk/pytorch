@@ -31,6 +31,7 @@ class MPSDeviceOpOverrides(DeviceOpOverrides):
         return """
             #include <ATen/native/mps/MetalShaderLibrary.h>
             #include <memory>
+            #include <optional>
             #include <string>
             #include <unordered_map>
             #include <vector>
@@ -44,11 +45,15 @@ class MPSDeviceOpOverrides(DeviceOpOverrides):
                     device_index, reinterpret_cast<StreamHandle*>(ret_stream));
             }
 
+            // AOTI appends cubin_dir_; the metallib path is already absolute,
+            // so it is accepted and ignored.
             static inline at::native::mps::MetalKernelFunction* loadKernel(
                     const std::string& metallibPath,
                     const std::string& funcName,
-                    uint32_t sharedMemBytes) {
+                    uint32_t sharedMemBytes,
+                    const std::optional<std::string>& cubinDir = std::nullopt) {
                 (void)sharedMemBytes;
+                (void)cubinDir;
                 static std::unordered_map<
                     std::string,
                     std::unique_ptr<at::native::mps::PrecompiledMetalShaderLibrary>> libs;
@@ -79,9 +84,10 @@ class MPSDeviceOpOverrides(DeviceOpOverrides):
                     uint32_t numWarps,
                     uint32_t sharedMemBytes,
                     void* args[],
-                    StreamHandle stream,
-                    const bool is_ptr[],
-                    unsigned nargs) {
+                    void* stream,
+                    const bool is_ptr[] = nullptr,
+                    const unsigned scalar_size[] = nullptr,
+                    unsigned nargs = 0) {
                 (void)sharedMemBytes;
                 (void)stream;
                 const uint64_t threadsPerGroup =
@@ -91,20 +97,40 @@ class MPSDeviceOpOverrides(DeviceOpOverrides):
                     static_cast<uint64_t>(gridY),
                     static_cast<uint64_t>(gridZ)};
                 const std::vector<uint64_t> group = {threadsPerGroup, 1, 1};
+
+                // The emitted MSL signature is [ptr0, ptr1, ..., packed_scalars]:
+                // pointers keep their relative order and every scalar is packed,
+                // at natural alignment, into one trailing setBytes buffer. See
+                // EmitMSLFunc.cpp's argbuf packing, which this must mirror.
+                std::vector<unsigned char> packed;
+                for (unsigned i = 0; i < nargs; ++i) {
+                    if (is_ptr[i]) {
+                        continue;
+                    }
+                    const unsigned sz = scalar_size[i];
+                    packed.resize((packed.size() + sz - 1) / sz * sz);
+                    const auto* bytes = static_cast<const unsigned char*>(args[i]);
+                    packed.insert(packed.end(), bytes, bytes + sz);
+                }
+
                 func->runCommandBlock([&] {
                     func->startEncoding();
                     auto handle =
                         reinterpret_cast<AOTIMetalKernelFunctionHandle>(func);
+                    unsigned slot = 0;
                     for (unsigned i = 0; i < nargs; ++i) {
-                        // Every slot holds the ADDRESS of the value, per the
-                        // shared void*[] convention.
-                        if (is_ptr[i]) {
-                            AOTI_TORCH_ERROR_CODE_CHECK(
-                                aoti_torch_mps_set_arg_buffer(
-                                    handle, i, *static_cast<void**>(args[i])));
-                        } else {
-                            func->setArg(i, args[i], sizeof(int32_t));
+                        if (!is_ptr[i]) {
+                            continue;
                         }
+                        // Tensor slots hold the ADDRESS of an AtenTensorHandle,
+                        // per the shared void*[] convention.
+                        AOTI_TORCH_ERROR_CODE_CHECK(
+                            aoti_torch_mps_set_arg_tensor(
+                                handle, slot++,
+                                *static_cast<AtenTensorHandle*>(args[i])));
+                    }
+                    if (!packed.empty()) {
+                        func->setArg(slot, packed.data(), packed.size());
                     }
                     func->dispatch(grid, group);
                 });
@@ -130,15 +156,18 @@ class MPSDeviceOpOverrides(DeviceOpOverrides):
         return "torch::aot_inductor::AOTIMpsStreamGuard"
 
     def cpp_stream_type(self) -> str:
-        # aoti_torch_get_current_stream fills a StreamHandle; MPS kernels never
-        # dereference it, but the declared type has to match to compile.
-        return "StreamHandle"
+        # Must match DeviceStreamType in aoti_runtime/device_utils.h, which is
+        # void* for every device without its own branch. MPS kernels never
+        # dereference the stream.
+        return "void*"
 
     def aoti_get_stream(self) -> str:
         return "aoti_torch_get_current_mps_stream"
 
     def cpp_device_ptr(self) -> str:
-        return "void*"
+        # Metal binds allocations, not addresses, so the launch path carries
+        # tensor handles rather than data pointers.
+        return "AtenTensorHandle"
 
     def kernel_header(self) -> str:
         return """

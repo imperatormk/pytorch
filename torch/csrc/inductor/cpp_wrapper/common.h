@@ -83,12 +83,8 @@ class RAIIPyObject {
 using namespace torch::aot_inductor;
 
 #include <c10/util/generic_math.h>
+#include <torch/csrc/inductor/align.h>
 #include <torch/csrc/inductor/aoti_runtime/scalar_to_tensor.h>
-
-// Round up to the nearest multiple of 64
-[[maybe_unused]] inline int64_t align(int64_t nbytes) {
-  return (nbytes + 64 - 1) & -64;
-}
 
 // Helpers backed by function pointers exported from the torch._C._dynamo.guards
 // Python module. Defined at the end of this header so they can use RAIIPyObject

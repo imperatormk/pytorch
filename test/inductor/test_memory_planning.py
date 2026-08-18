@@ -163,15 +163,17 @@ class TestMemoryPlanning(TestCase):
             lambda: AOTIRunnerUtil.run(f, args, dynamic_shapes=dynamic_shapes)
         )
 
+        # The C++ printer suffixes int64 literals per platform.
+        ll = "LL" if sys.platform in ["darwin", "win32"] else "L"
         FileCheck().check(
-            "int64_t int_array_0[] = {24L + align(12L*s6), };"
-        ).check_next("int64_t int_array_1[] = {1L, };").check_next(
+            f"int64_t int_array_0[] = {{24{ll} + align(12{ll}*s6), }};"
+        ).check_next(f"int64_t int_array_1[] = {{1{ll}, }};").check_next(
             "AtenTensorHandle pool1_handle;"
         ).check_next(
             "aoti_torch_empty_strided(1, int_array_0, int_array_1,"
         ).check_next("RAIIAtenTensorHandle pool1(pool1_handle);").check_next(
-            "int64_t int_array_2[] = {s6, 3L};"
-        ).check_next("int64_t int_array_3[] = {3L, 1L};").check_next(
+            f"int64_t int_array_2[] = {{s6, 3{ll}}};"
+        ).check_next(f"int64_t int_array_3[] = {{3{ll}, 1{ll}}};").check_next(
             "AtenTensorHandle tmp_tensor_handle_0;"
         ).check_next("aoti_torch__alloc_from_pool(pool1, 0").run(code)
         self.assertTrue(same(f(*args), result))
@@ -218,13 +220,17 @@ class TestMemoryPlanning(TestCase):
         # Check allocation is done after the unbacked symint is computed. The
         # exact int_array_N names are not stable, so capture the emitted names
         # and verify the calls use the matching shape/stride arrays.
+        # The C++ printer suffixes int64 literals per platform.
+        ll = "LL" if sys.platform in ["darwin", "win32"] else "L"
         u0_match = find_code(r"auto u0 = u0_raw;")
         pool_shape = find_code(
-            r"const int64_t (?P<name>int_array_\d+)\[\] = \{10L, 8L\*u0, 32L\};",
+            rf"const int64_t (?P<name>int_array_\d+)\[\] = "
+            rf"\{{10{ll}, 8{ll}\*u0, 32{ll}\}};",
             u0_match.end(),
         )
         pool_stride = find_code(
-            r"const int64_t (?P<name>int_array_\d+)\[\] = \{256L\*u0, 32L, 1L\};",
+            rf"const int64_t (?P<name>int_array_\d+)\[\] = "
+            rf"\{{256{ll}\*u0, 32{ll}, 1{ll}\}};",
             pool_shape.end(),
         )
         pool_handle = find_code(r"AtenTensorHandle pool0_handle;", pool_stride.end())
@@ -237,18 +243,33 @@ class TestMemoryPlanning(TestCase):
         )
 
         # all AtenTensorHandle allocated using aoti_torch__alloc_from_pool are wrapped with RAIIAtenTensorHandle
-        # otherwise we'll have memory leak
-        FileCheck().check_count(
-            "aoti_torch__alloc_from_pool(pool1", 1, exactly=True
-        ).check_count("aoti_torch__alloc_from_pool(pool0", 1, exactly=True).run(code)
+        # otherwise we'll have memory leak.
+        # With autotune_at_compile_time off, AOTI codegens a JIT wrapper to run
+        # the autotuning and then the AOTI one, and both reach the output_code
+        # log, so each allocation appears once per wrapper.
+        wrappers = code.count("AOTInductorModel::run_impl") or 1
+        for pool in ("pool0", "pool1"):
+            FileCheck().check_count(
+                f"aoti_torch__alloc_from_pool({pool}", wrappers, exactly=True
+            ).run(code)
 
-        array_decls = {
-            match.group("name"): match
-            for match in re.finditer(
+        # Each wrapper redeclares the arrays, so key on the declaration that
+        # precedes the allocation being checked, not the last one in the file.
+        array_decl_matches = list(
+            re.finditer(
                 r"const int64_t (?P<name>int_array_\d+)\[\] = \{(?P<value>[^}]+)\};",
                 code,
             )
-        }
+        )
+
+        def decl_before(name, pos):
+            found = [
+                m
+                for m in array_decl_matches
+                if m.group("name") == name and m.end() < pos
+            ]
+            return found[-1] if found else None
+
         pool1_alloc = find_code(
             r"AOTI_TORCH_ERROR_CODE_CHECK\(aoti_torch__alloc_from_pool\(pool1, 0, cached_torch_dtype_int32, 0, int_array_\d+, int_array_\d+, &(?P<handle>tmp_tensor_handle_\d+)\)\);"
         )
@@ -260,14 +281,12 @@ class TestMemoryPlanning(TestCase):
             r"AOTI_TORCH_ERROR_CODE_CHECK\(aoti_torch__alloc_from_pool\(pool0, 0, cached_torch_dtype_float32, 3, (?P<shape>int_array_\d+), (?P<stride>int_array_\d+), &(?P<handle>tmp_tensor_handle_\d+)\)\);",
             max(pool0_raii.end(), pool1_raii.end()),
         )
-        alloc_shape = pool0_alloc.group("shape")
-        alloc_stride = pool0_alloc.group("stride")
-        self.assertIn(alloc_shape, array_decls)
-        self.assertIn(alloc_stride, array_decls)
-        self.assertLess(array_decls[alloc_shape].end(), pool0_alloc.start())
-        self.assertLess(array_decls[alloc_stride].end(), pool0_alloc.start())
-        self.assertEqual(array_decls[alloc_shape].group("value"), "10L, 8L*u0, 32L")
-        self.assertEqual(array_decls[alloc_stride].group("value"), "256L*u0, 32L, 1L")
+        shape_decl = decl_before(pool0_alloc.group("shape"), pool0_alloc.start())
+        stride_decl = decl_before(pool0_alloc.group("stride"), pool0_alloc.start())
+        self.assertIsNotNone(shape_decl)
+        self.assertIsNotNone(stride_decl)
+        self.assertEqual(shape_decl.group("value"), f"10{ll}, 8{ll}*u0, 32{ll}")
+        self.assertEqual(stride_decl.group("value"), f"256{ll}*u0, 32{ll}, 1{ll}")
         find_code(
             rf"RAIIAtenTensorHandle\({pool0_alloc.group('handle')}\);",
             pool0_alloc.end(),

@@ -219,6 +219,21 @@ def _unpack_tma_descriptor_args(var_name: str, sig_type: str) -> list[str]:
     return result
 
 
+def _write_arg_kind_arrays(prefix, wrapper, n_args: int) -> None:
+    """Emit the buffer/scalar mask and per-arg widths kernel_args_ erases.
+
+    Backends that bind buffers and copy scalars separately (MPS) cannot recover
+    either from a void*[]; both arrays are filled by generate_args_decl.
+    """
+    kinds = list(getattr(wrapper, "last_args_are_ptr", None) or [])
+    kinds = (kinds + [False] * n_args)[:n_args]
+    sizes = list(getattr(wrapper, "last_arg_sizes", None) or [])
+    sizes = (sizes + ["0"] * n_args)[:n_args]
+    kinds_str = ", ".join("true" if k else "false" for k in kinds)
+    prefix.writeline(f"bool kernel_arg_is_ptr_[] = {{{kinds_str}}};")
+    prefix.writeline(f"unsigned kernel_arg_size_[] = {{{', '.join(sizes)}}};")
+
+
 class _LazyTritonCompileKickoffLine(DeferredLineBase):
     def __init__(self, lazy_kernel_names: list[str], line: str):
         super().__init__(line)
@@ -620,7 +635,9 @@ class DeferredTritonCallWrapper:
             f" kernel_args_, stream_"
         )
         if needs_arg_kinds:
-            common_launch_args += f", kernel_arg_is_ptr_, {n_args}"
+            common_launch_args += (
+                f", kernel_arg_is_ptr_, kernel_arg_size_, {n_args}"
+            )
         # stream_ comes from the generated wrapper signature on both JIT and
         # AOTI sides.
         launch_kernel_args = [
@@ -634,10 +651,7 @@ class DeferredTritonCallWrapper:
         # kernel_args_ is consumed by both JIT and AOT launchKernel calls.
         prefix.writeline(f"void* kernel_args_[] = {{{call_args_str}}};")
         if needs_arg_kinds:
-            kinds = getattr(wrapper, "last_args_are_ptr", None) or []
-            kinds = (list(kinds) + [False] * n_args)[:n_args]
-            kinds_str = ", ".join("true" if k else "false" for k in kinds)
-            prefix.writeline(f"bool kernel_arg_is_ptr_[] = {{{kinds_str}}};")
+            _write_arg_kind_arrays(prefix, wrapper, n_args)
         enable_kernel_profile = config.cpp.enable_kernel_profile and sys.platform in [
             "linux",
             "win32",
@@ -792,9 +806,11 @@ class DeferredTritonCallWrapper:
             prefix.splice_jit(jit_init)
 
             # AOTI: load precompiled cubin from compile-time-initialized result.
+            # loaded_modules_ tracks CUmodule handles and is declared under
+            # USE_CUDA only, so it exists for cuda and hip but nothing else.
             loaded_modules_arg = (
                 ",\n                        &kernels_.loaded_modules_"
-                if V.graph.device_type != "xpu"
+                if V.graph.device_type in ("cuda", "hip")
                 else ""
             )
             aoti_init = IndentedBuffer(initial_indent=prefix._indent)
@@ -875,10 +891,10 @@ class DeferredTritonCallWrapper:
 
             # In AOTI mode on CUDA/HIP, pass the loaded_modules_ vector so
             # CUmodule handles are tracked and can be unloaded on destruction,
-            # preventing GPU code object leaks. XPU is excluded because its
-            # loadKernel returns std::unique_ptr<sycl::kernel> and manages
-            # cleanup via RAII.
-            if V.graph.aot_mode and V.graph.device_type != "xpu":
+            # preventing GPU code object leaks. Other devices are excluded:
+            # the member is declared under USE_CUDA only, and XPU's loadKernel
+            # returns std::unique_ptr<sycl::kernel> and cleans up via RAII.
+            if V.graph.aot_mode and V.graph.device_type in ("cuda", "hip"):
                 load_kernel_args = load_kernel_args + ["&kernels_.loaded_modules_"]
 
             prefix.writeline(
@@ -928,6 +944,14 @@ class DeferredTritonCallWrapper:
             "kernel_args_",
             "stream_",
         ]
+        if wrapper.device_codegen.launch_needs_arg_kinds():
+            n_args = call_args_str.count(",") + 1 if call_args_str else 0
+            _write_arg_kind_arrays(prefix, wrapper, n_args)
+            launch_kernel_args += [
+                "kernel_arg_is_ptr_",
+                "kernel_arg_size_",
+                str(n_args),
+            ]
 
         enable_kernel_profile = config.cpp.enable_kernel_profile and sys.platform in [
             "linux",
@@ -1605,6 +1629,10 @@ static inline void ensure_triton_kernel_compiles_started() {{
         # read this alongside new_args; CUDA-likes pass everything by address.
         arg_is_ptr: list[bool] = []
         self.last_args_are_ptr = arg_is_ptr
+        # Emitted as sizeof() expressions so the C++ compiler resolves the width
+        # of each declared scalar; only backends that pack scalars read them.
+        arg_sizes: list[str] = []
+        self.last_arg_sizes = arg_sizes
 
         def process_tma_stable_arg(arg, arg_type, arg_signature, var_name):
             # [Note: AOTI TMA Stable handling]
@@ -1637,11 +1665,16 @@ static inline void ensure_triton_kernel_compiles_started() {{
                 arg_signature
             ):
                 device_ptr_type = self.device_codegen.cpp_device_ptr()
-                code.writeline(
-                    maybe_hipify_code_wrapper(
-                        f"{device_ptr_type} {var_name} = reinterpret_cast<{device_ptr_type}>({arg}.data_ptr());"
+                if self.device_codegen.launch_needs_arg_kinds():
+                    # A data_ptr() cannot be bound as a Metal buffer: on MPS the
+                    # allocation identity lives in the tensor, not the address.
+                    code.writeline(f"AtenTensorHandle {var_name} = {arg};")
+                else:
+                    code.writeline(
+                        maybe_hipify_code_wrapper(
+                            f"{device_ptr_type} {var_name} = reinterpret_cast<{device_ptr_type}>({arg}.data_ptr());"
+                        )
                     )
-                )
                 new_args.append(f"&{var_name}")
             # For symbolic call arguments, examine the arg signatures from triton meta
             # to explicitly cast to the right type
@@ -1682,6 +1715,10 @@ static inline void ensure_triton_kernel_compiles_started() {{
                 arg_signature
             )
             arg_is_ptr.extend([is_ptr] * (len(new_args) - before))
+            arg_sizes.extend(
+                f"sizeof({a[1:]})" if a.startswith("&") else "0"
+                for a in new_args[before:]
+            )
 
         for scratch_name, workspace_size in (scratch_spaces or {}).items():
             if (

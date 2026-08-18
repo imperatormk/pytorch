@@ -2631,7 +2631,9 @@ class GraphLowering(torch.fx.Interpreter):
         `cpp_wrapper_cpu.py`).
         """
         self.validate_can_generate_cpp_wrapper()
-        has_gpu = any(device in self.device_types for device in ["cuda", "xpu"])
+        has_gpu = any(
+            device in self.device_types for device in ["cuda", "xpu", "mps"]
+        )
         # CPU + user-defined Triton + AOTI + autotune block disabled is the
         # only CPU configuration that needs the two-pass dance: the autotune
         # block normally populates CpuTritonKernelCache, but here it doesn't run.
