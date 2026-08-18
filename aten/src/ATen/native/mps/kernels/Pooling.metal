@@ -712,6 +712,90 @@ kernel void avg_pool(
   }
 }
 
+// Adaptive pooling bin bounds. Unlike a strided pool, each output bin covers
+// [floor(i*I/O), ceil((i+1)*I/O)), so bins vary in size whenever O does not
+// divide I -- which is exactly the case a single stride cannot express.
+inline int32_t adaptive_start(int32_t out_idx, int32_t in_size, int32_t out_size) {
+  return (out_idx * in_size) / out_size;
+}
+
+inline int32_t adaptive_end(int32_t out_idx, int32_t in_size, int32_t out_size) {
+  return ((out_idx + 1) * in_size + out_size - 1) / out_size;
+}
+
+// One thread per output element.
+template <typename T>
+kernel void adaptive_avg_pool(
+    constant T* input [[buffer(0)]],
+    device T* output [[buffer(1)]],
+    constant AdaptiveAvgPoolingParams<5>& params [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  auto pooling_dims = params.pooling_dims;
+  auto dims = params.dims;
+  auto input_sizes = params.input_sizes.data();
+  auto input_strides = params.input_strides.data();
+  auto output_sizes = params.output_sizes.data();
+  auto output_strides = params.output_strides.data();
+  auto leading_dims = dims - pooling_dims;
+
+  int32_t pooling_dim_indices[3];
+
+  PoolOffsets offsets = find_pool_offsets(
+      output_sizes,
+      output_strides,
+      /*indices_strides=*/nullptr,
+      input_strides,
+      pooling_dim_indices,
+      dims,
+      leading_dims,
+      /*return_indices=*/false,
+      tid);
+
+  output += offsets.output;
+  input += offsets.input_leading;
+  input_sizes += leading_dims;
+  input_strides += leading_dims;
+
+  int32_t start[3];
+  int32_t end[3];
+  int32_t count = 1;
+
+  for (auto dim = 0; dim < pooling_dims; dim++) {
+    start[dim] =
+        adaptive_start(pooling_dim_indices[dim], input_sizes[dim], output_sizes[leading_dims + dim]);
+    end[dim] =
+        adaptive_end(pooling_dim_indices[dim], input_sizes[dim], output_sizes[leading_dims + dim]);
+    count *= (end[dim] - start[dim]);
+  }
+
+  auto sum = static_cast<float>(0);
+
+  if (pooling_dims == 1) {
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      sum += static_cast<float>(input[input_strides[0] * i0]);
+    }
+  } else if (pooling_dims == 2) {
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      auto offset0 = input_strides[0] * i0;
+      for (auto i1 = start[1]; i1 < end[1]; i1++) {
+        sum += static_cast<float>(input[offset0 + input_strides[1] * i1]);
+      }
+    }
+  } else {
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      auto offset0 = input_strides[0] * i0;
+      for (auto i1 = start[1]; i1 < end[1]; i1++) {
+        auto offset1 = offset0 + input_strides[1] * i1;
+        for (auto i2 = start[2]; i2 < end[2]; i2++) {
+          sum += static_cast<float>(input[offset1 + input_strides[2] * i2]);
+        }
+      }
+    }
+  }
+
+  *output = static_cast<T>(sum / static_cast<float>(count));
+}
+
 template <typename T>
 kernel void avg_pool_backward(
     device AtomicType_t<T>* grad_input [[buffer(0)]],
@@ -761,6 +845,88 @@ kernel void avg_pool_backward(
       params.count_include_pad,
       params.has_divisor_override,
       params.divisor_override);
+}
+
+// One thread per grad_output element; each scatters its share into the bin it
+// came from. Bins overlap when O does not divide I, hence the atomic add.
+template <typename T>
+kernel void adaptive_avg_pool_backward(
+    device AtomicType_t<T>* grad_input [[buffer(0)]],
+    constant T* grad_output [[buffer(1)]],
+    constant AdaptiveAvgPoolingParams<5>& params [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  auto pooling_dims = params.pooling_dims;
+  auto dims = params.dims;
+  auto grad_input_sizes = params.input_sizes.data();
+  auto grad_input_strides = params.input_strides.data();
+  auto grad_output_sizes = params.output_sizes.data();
+  auto grad_output_strides = params.output_strides.data();
+  auto leading_dims = dims - pooling_dims;
+
+  int32_t pooling_dim_indices[3];
+
+  PoolOffsets offsets = find_pool_offsets(
+      grad_output_sizes,
+      grad_output_strides,
+      /*indices_strides=*/nullptr,
+      grad_input_strides,
+      pooling_dim_indices,
+      dims,
+      leading_dims,
+      /*return_indices=*/false,
+      tid);
+
+  grad_output += offsets.output;
+  grad_input_sizes += leading_dims;
+  grad_input_strides += leading_dims;
+
+  int32_t start[3];
+  int32_t end[3];
+  int32_t count = 1;
+
+  for (auto dim = 0; dim < pooling_dims; dim++) {
+    start[dim] = adaptive_start(
+        pooling_dim_indices[dim],
+        grad_input_sizes[dim],
+        grad_output_sizes[leading_dims + dim]);
+    end[dim] = adaptive_end(
+        pooling_dim_indices[dim],
+        grad_input_sizes[dim],
+        grad_output_sizes[leading_dims + dim]);
+    count *= (end[dim] - start[dim]);
+  }
+
+  auto grad_val = *grad_output / static_cast<T>(count);
+
+  if (pooling_dims == 1) {
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      AtomicType<T>::atomic_add(
+          grad_input, offsets.input_leading + grad_input_strides[0] * i0, grad_val);
+    }
+  } else if (pooling_dims == 2) {
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      auto offset0 = grad_input_strides[0] * i0;
+      for (auto i1 = start[1]; i1 < end[1]; i1++) {
+        AtomicType<T>::atomic_add(
+            grad_input,
+            offsets.input_leading + offset0 + grad_input_strides[1] * i1,
+            grad_val);
+      }
+    }
+  } else {
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      auto offset0 = grad_input_strides[0] * i0;
+      for (auto i1 = start[1]; i1 < end[1]; i1++) {
+        auto offset1 = offset0 + grad_input_strides[1] * i1;
+        for (auto i2 = start[2]; i2 < end[2]; i2++) {
+          AtomicType<T>::atomic_add(
+              grad_input,
+              offsets.input_leading + offset1 + grad_input_strides[2] * i2,
+              grad_val);
+        }
+      }
+    }
+  }
 }
 
 // Start of the `i`th pooling interval along one dimension, matching
@@ -893,6 +1059,13 @@ REGISTER_FRACTIONAL_POOL_OP(bfloat);
       constant DTYPE * input [[buffer(0)]],                                   \
       device DTYPE * output [[buffer(1)]],                                    \
       constant AvgPoolingParams<5> & params [[buffer(2)]],                    \
+      uint tid [[thread_position_in_grid]]);                                  \
+                                                                              \
+  template [[host_name("adaptive_avg_pool_" #DTYPE)]]                         \
+  kernel void adaptive_avg_pool<DTYPE>(                                       \
+      constant DTYPE * input [[buffer(0)]],                                   \
+      device DTYPE * output [[buffer(1)]],                                    \
+      constant AdaptiveAvgPoolingParams<5> & params [[buffer(2)]],            \
       uint tid [[thread_position_in_grid]]);
 
 #define REGISTER_POOL_BACKWARD_OP(DTYPE)                       \
@@ -909,6 +1082,14 @@ REGISTER_FRACTIONAL_POOL_OP(bfloat);
       device AtomicType_t<DTYPE> * grad_input [[buffer(0)]],   \
       constant DTYPE * grad_output [[buffer(1)]],              \
       constant AvgPoolingParams<5> & params [[buffer(2)]],     \
+      uint tid [[thread_position_in_grid]]);                   \
+                                                               \
+  template [[host_name("adaptive_avg_pool_backward_" #DTYPE)]] \
+  kernel void adaptive_avg_pool_backward<DTYPE>(               \
+      device AtomicType_t<DTYPE> * grad_input [[buffer(0)]],   \
+      constant DTYPE * grad_output [[buffer(1)]],              \
+      constant AdaptiveAvgPoolingParams<5> & params            \
+      [[buffer(2)]],                                           \
       uint tid [[thread_position_in_grid]]);
 
 REGISTER_POOL_OP(float);

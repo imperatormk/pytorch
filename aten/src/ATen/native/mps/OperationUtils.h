@@ -872,4 +872,16 @@ static bool is_dense_broadcastable(const Tensor& from, const Tensor& into) {
   return true;
 }
 
+// Defined in Pooling.mm, used from AdaptivePooling.mm for the non-uniform bin
+// case that cannot be expressed as a strided avg_pool.
+void adaptive_avg_pool_out_mps_template(const Tensor& output,
+                                        const Tensor& input,
+                                        const int32_t pooling_dims,
+                                        const std::string& op_name);
+
+void adaptive_avg_pool_backward_out_mps_template(const Tensor& grad_input,
+                                                 const Tensor& grad_output,
+                                                 const int32_t pooling_dims,
+                                                 const std::string& op_name);
+
 } // namespace at::native::mps

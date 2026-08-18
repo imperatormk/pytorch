@@ -22,6 +22,22 @@
 #endif
 namespace at::native {
 namespace mps {
+
+// The avg_pool2d mapping below is only equivalent to adaptive pooling when the
+// bins are uniform; otherwise each bin spans [floor(i*I/O), ceil((i+1)*I/O)),
+// which one stride cannot express.
+static bool adaptive_pool_is_uniform(int64_t isizeH, int64_t isizeW, int64_t osizeH, int64_t osizeW) {
+  if (osizeH == 0 || osizeW == 0 || isizeH == 0 || isizeW == 0) {
+    return false;
+  }
+  if (isizeH >= osizeH && isizeW >= osizeW) {
+    return isizeH % osizeH == 0 && isizeW % osizeW == 0;
+  }
+  if (isizeH <= osizeH && isizeW <= osizeW) {
+    return osizeH % isizeH == 0 && osizeW % isizeW == 0;
+  }
+  return false;
+}
 static void set_kernel_params(int64_t isizeH,
                               int64_t isizeW,
                               int64_t osizeH,
@@ -75,6 +91,11 @@ Tensor& adaptive_avg_pool2d_out_mps(const Tensor& input, IntArrayRef output_size
   int64_t isizeW = input.size(-1);
   int64_t osizeH = output_size[0];
   int64_t osizeW = output_size[1];
+
+  if (!mps::adaptive_pool_is_uniform(isizeH, isizeW, osizeH, osizeW)) {
+    mps::adaptive_avg_pool_out_mps_template(output, input, /*pooling_dims=*/2, "adaptive_avg_pool2d");
+    return output;
+  }
 
   int64_t strideH = 0, strideW = 0;
   int64_t kernel_sizeH = 0, kernel_sizeW = 0;
@@ -146,6 +167,15 @@ Tensor adaptive_avg_pool2d_backward_mps(const Tensor& gradOutput, const Tensor& 
   int64_t isizeW = input.size(-1);
   int64_t osizeH = gradOutput.size(-2);
   int64_t osizeW = gradOutput.size(-1);
+
+  if (!mps::adaptive_pool_is_uniform(isizeH, isizeW, osizeH, osizeW)) {
+    auto gradInput = at::zeros_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+    if (gradInput.numel() != 0) {
+      mps::adaptive_avg_pool_backward_out_mps_template(
+          gradInput, gradOutput.contiguous(), /*pooling_dims=*/2, "adaptive_avg_pool2d_backward");
+    }
+    return gradInput;
+  }
 
   int64_t strideH = 0, strideW = 0;
   int64_t kernel_sizeH = 0, kernel_sizeW = 0;

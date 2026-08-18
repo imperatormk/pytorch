@@ -918,6 +918,88 @@ static void avg_pool_out_mps_template(const Tensor& output,
   });
 }
 
+void adaptive_avg_pool_out_mps_template(const Tensor& output,
+                                        const Tensor& input,
+                                        const int32_t pooling_dims,
+                                        const std::string& op_name) {
+  TORCH_CHECK_NOT_IMPLEMENTED(!c10::isComplexType(input.scalar_type()), "Not implemented for complex");
+
+  id<MTLDevice> device = MPSDevice::getInstance()->device();
+  MPSStream* mpsStream = getCurrentMPSStream();
+  const auto numThreads = output.numel();
+  if (numThreads == 0) {
+    return;
+  }
+
+  AdaptiveAvgPoolingParams<5> params;
+  const auto dims = input.dim();
+
+  params.dims = dims;
+  params.pooling_dims = pooling_dims;
+
+  for (const auto dim : c10::irange(dims)) {
+    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(input.size(dim));
+    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(input.stride(dim));
+    params.output_sizes[dim] = safe_downcast<int32_t, int64_t>(output.size(dim));
+    params.output_strides[dim] = safe_downcast<int32_t, int64_t>(output.stride(dim));
+  }
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      auto PSO = lib.getPipelineStateForFunc("adaptive_avg_pool_" + scalarToMetalTypeString(input));
+
+      getMPSProfiler().beginProfileKernel(PSO, op_name, {input});
+      [computeEncoder setComputePipelineState:PSO];
+      mtl_setArgs(computeEncoder, input, output, params);
+
+      mtl_dispatch1DJob(computeEncoder, PSO, numThreads);
+      getMPSProfiler().endProfileKernel(PSO);
+    }
+  });
+}
+
+void adaptive_avg_pool_backward_out_mps_template(const Tensor& grad_input,
+                                                 const Tensor& grad_output,
+                                                 const int32_t pooling_dims,
+                                                 const std::string& op_name) {
+  TORCH_CHECK_NOT_IMPLEMENTED(!c10::isComplexType(grad_input.scalar_type()), "Not implemented for complex");
+
+  id<MTLDevice> device = MPSDevice::getInstance()->device();
+  MPSStream* mpsStream = getCurrentMPSStream();
+  const auto numThreads = grad_output.numel();
+  if (numThreads == 0) {
+    return;
+  }
+
+  AdaptiveAvgPoolingParams<5> params;
+  const auto dims = grad_input.dim();
+
+  params.dims = dims;
+  params.pooling_dims = pooling_dims;
+
+  for (const auto dim : c10::irange(dims)) {
+    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(grad_input.size(dim));
+    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(grad_input.stride(dim));
+    params.output_sizes[dim] = safe_downcast<int32_t, int64_t>(grad_output.size(dim));
+    params.output_strides[dim] = safe_downcast<int32_t, int64_t>(grad_output.stride(dim));
+  }
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      auto PSO = lib.getPipelineStateForFunc("adaptive_avg_pool_backward_" + scalarToMetalTypeString(grad_input));
+
+      getMPSProfiler().beginProfileKernel(PSO, op_name, {grad_output});
+      [computeEncoder setComputePipelineState:PSO];
+      mtl_setArgs(computeEncoder, grad_input, grad_output, params);
+
+      mtl_dispatch1DJob(computeEncoder, PSO, numThreads);
+      getMPSProfiler().endProfileKernel(PSO);
+    }
+  });
+}
+
 static void avg_pool_backward_out_mps_template(const Tensor& grad_input,
                                                const Tensor& input,
                                                const Tensor& grad_output,
