@@ -1462,7 +1462,13 @@ class _InternalsBase:
         )
 
     def test_rmsnorm_mxfp8_scale_swizzle_kernel_form(self):
-        if torch.cuda.get_device_capability() < (10, 0):
+        # This asserts on a PTX instruction, so it is CUDA-only in substance.
+        # get_device_capability() raises off CUDA rather than returning
+        # something falsy, so ask before calling it.
+        if not torch.cuda.is_available() or torch.cuda.get_device_capability() < (
+            10,
+            0,
+        ):
             self.skipTest("cvt_e8m0_rceil lowering requires SM100+")
 
         self.assert_single_kernel_form(

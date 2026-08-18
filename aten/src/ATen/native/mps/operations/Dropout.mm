@@ -1,5 +1,6 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/TensorOperators.h>
+#include <ATen/ceil_div.h>
 #include <ATen/mps/MPSGeneratorImpl.h>
 #include <ATen/native/Distributions.h>
 #include <ATen/native/mps/OperationUtils.h>
@@ -58,7 +59,11 @@ std::tuple<Tensor, Tensor> native_dropout_mps(const Tensor& input, double p, std
       std::lock_guard<std::mutex> lock(mps_gen->mutex_);
       seed = static_cast<int64_t>(mps_gen->current_seed());
       base_offset = static_cast<int64_t>(mps_gen->get_offset());
-      mps_gen->set_offset(base_offset + input_c.numel());
+      // The kernel makes one philox call per thread at `base_offset + tid` and
+      // is dispatched over ceil(numel/4) threads, so it consumes that many
+      // indices. Advancing by numel over-shoots 4x and leaves this generator
+      // out of step with every other distribution kernel.
+      mps_gen->set_offset(base_offset + at::ceil_div<int64_t>(input_c.numel(), 4));
     }
 
     dispatch_sync_with_rethrow(stream->queue(), ^() {
