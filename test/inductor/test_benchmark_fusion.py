@@ -1,6 +1,7 @@
 # Owner(s): ["module: inductor"]
 import math
 import os
+import re
 import sys
 
 import torch
@@ -12,6 +13,7 @@ from torch.testing import FileCheck
 from torch.testing._internal.common_utils import slowTest
 from torch.testing._internal.inductor_utils import (
     get_func_call,
+    get_kernel_launch,
     GPU_TYPE,
     HAS_CPU,
     HAS_GPU_AND_TRITON,
@@ -184,8 +186,14 @@ class BenchmarkFusionTestTemplate:
 
             _, out_code2 = run_and_get_code(foo_c, m, inp)
 
+        # Each backend spells the guard its own way -- MPS has a single device
+        # and emits a nullcontext -- so check what this one actually generates.
+        from torch._inductor.codegen.common import get_device_op_overrides
+
+        guard_str = get_device_op_overrides(GPU_TYPE).device_guard(0)
+
         for c in out_code[0], out_code2[0]:
-            FileCheck().check("async_compile.wait").check("DeviceGuard").check_count(
+            FileCheck().check("async_compile.wait").check(guard_str).check_count(
                 f"empty_strided_{GPU_TYPE}", 1, exactly=True
             ).check_regex("buf[0-9]* = buf[0-9]*; del buf[0-9]*").check("return").run(c)
 
@@ -301,12 +309,22 @@ if HAS_GPU_AND_TRITON:
         )
         def test_equivalent_template_code(self):
             code, code2 = self._equivalent_output_code_impl(256)
+            # The fused name lists the template's origin ops, and those differ
+            # by backend: a device that folds the operand permute into the
+            # template's addressing has no separate "t" origin to name. What
+            # this asserts is that a Triton template won and absorbed the relu.
+            # Count the argument releases specifically: benchmark_kernel also
+            # emits a "del async_compile" inside the entry point, so a bare
+            # "del" count measures the harness rather than the buffer reuse.
+            release = ".reset()" if config.cpp_wrapper else "del arg"
             for out_code in [code, code2]:
                 FileCheck().check(get_func_call()).check_count(
                     "empty_strided", 1, exactly=True
-                ).check("triton_tem_fused_addmm_relu_t_0").check_count(
-                    ".reset()" if config.cpp_wrapper else "del", 3, exactly=True
-                ).check("" if config.cpp_wrapper else "return").run(out_code[0])
+                ).check_regex(
+                    r"triton_tem_fused_\w*relu\w*_0" + re.escape(get_kernel_launch())
+                ).check_count(release, 3, exactly=True).check(
+                    "" if config.cpp_wrapper else "return"
+                ).run(out_code[0])
 
         @fresh_cache()
         @config.patch(max_autotune_gemm_backends="ATEN")
