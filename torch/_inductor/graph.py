@@ -2943,7 +2943,7 @@ class GraphLowering(torch.fx.Interpreter):
         # A "cpu" device would precompile cpp_wrapper/cpu.h, which does not
         # include the CUDA headers needed to compile the kernel call sites.
         device_type = next(
-            (d for d in self.device_types if d in ("cuda", "xpu")),
+            (d for d in self.device_types if d in ("cuda", "xpu", "mps")),
             next((d for d in self.device_types if d != "meta"), "cpu"),
         )
 
