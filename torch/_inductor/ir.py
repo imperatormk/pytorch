@@ -6382,7 +6382,11 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
                     if "(" in desc:
                         desc = desc[desc.index("(") + 1 : desc.rindex(")")]
                         desc = desc.split(", ", 1)[-1]
-                    lines.append(f"  {t:9.4f} ms {best / t:7.1%}  {desc}{mark}")
+                    # A choice can measure 0.0 ms (an empty input has no work
+                    # to do), and this display must not take the compile down
+                    # with it.
+                    rel = f"{best / t:7.1%}" if t else "      -"
+                    lines.append(f"  {t:9.4f} ms {rel}  {desc}{mark}")
                 os.write(1, ("\n".join(lines) + "\n").encode())
         return self._choice_timings[hint_override]
 
