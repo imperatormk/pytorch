@@ -66,8 +66,10 @@ def should_decompose_bmm(mat1, mat2) -> bool:
         return False
     if len(mat1.shape) != 3 or len(mat2.shape) != 3:
         return False
-    if check_device(mat1, mat2, device="cuda") or check_device(
-        mat1, mat2, device="xpu"
+    if (
+        check_device(mat1, mat2, device="cuda")
+        or check_device(mat1, mat2, device="xpu")
+        or check_device(mat1, mat2, device="mps")
     ):
         if mat1.shape[0] < min_first_dimension_decomposition:
             return False
@@ -135,6 +137,7 @@ def should_decompose_mm(mat1, mat2) -> bool:
             (
                 check_device(mat1, mat2, device="cuda")
                 or check_device(mat1, mat2, device="xpu")
+                or check_device(mat1, mat2, device="mps")
             )
             and statically_known_true(
                 mat1.shape[0] >= min_first_dimension_decomposition
@@ -159,6 +162,7 @@ def should_decompose_mm(mat1, mat2) -> bool:
             (
                 check_device(mat1, mat2, device="cuda")
                 or check_device(mat1, mat2, device="xpu")
+                or check_device(mat1, mat2, device="mps")
             )
             and (
                 statically_known_true(
