@@ -442,6 +442,16 @@ inline T val_at_offs(P ptr, long offs, ScalarType type) {
   }
 }
 
+// Read an operand for a mixed-dtype kernel. Type promotion narrows every input
+// to the common dtype `T` first; the opmath widening to `om_t` happens only
+// afterwards. Casting straight to `om_t` would preserve magnitudes that `T`
+// cannot represent -- an int32 70000 against a half common dtype has to become
+// inf, not 70000.0f. Collapses to one cast whenever `T` and `om_t` coincide.
+template <typename om_t, typename T, typename P>
+inline om_t operand_at_offs(P ptr, long offs, ScalarType type) {
+  return static_cast<om_t>(val_at_offs<T>(ptr, offs, type));
+}
+
 // Store with dynamic cast to provided type. Mirrors val_at_offs's runtime
 // switch and is the store-side counterpart used by binary_*_castout kernels
 // (output dtype not known at compile time).
@@ -677,9 +687,9 @@ kernel void binary_strided_cast(
   const auto input_offs = offset_from_coord(pos, input_strides, ndim_types.x);
   const auto other_offs = offset_from_coord(pos, other_strides, ndim_types.x);
   const auto output_offs = offset_from_coord(pos, output_strides, ndim_types.x);
-  const auto a = val_at_offs<om_t>(
+  const auto a = operand_at_offs<om_t, T>(
       input, input_offs, static_cast<ScalarType>(ndim_types.y));
-  const auto b = val_at_offs<om_t>(
+  const auto b = operand_at_offs<om_t, T>(
       other, other_offs, static_cast<ScalarType>(ndim_types.z));
   ref_at_offs<res_t>(output, output_offs) = static_cast<res_t>(f(a, b));
 }
@@ -708,9 +718,9 @@ kernel void binary_strided_castout(
   const auto input_offs = offset_from_coord(pos, input_strides, ndim_types.x);
   const auto other_offs = offset_from_coord(pos, other_strides, ndim_types.x);
   const auto output_offs = offset_from_coord(pos, output_strides, ndim_types.x);
-  const auto a = val_at_offs<om_t>(
+  const auto a = operand_at_offs<om_t, T>(
       input, input_offs, static_cast<ScalarType>(ndim_types.y));
-  const auto b = val_at_offs<om_t>(
+  const auto b = operand_at_offs<om_t, T>(
       other, other_offs, static_cast<ScalarType>(ndim_types.z));
   const res_t result = static_cast<res_t>(f(a, b));
   store_at_offs<res_t>(
@@ -877,9 +887,9 @@ kernel void binary_dense_cast(
     uint tid [[thread_position_in_grid]]) {
   F f;
   using res_t = result_of<F, T, T>;
-  const auto a = val_at_offs<om_t>(
+  const auto a = operand_at_offs<om_t, T>(
       input, tid * sizes_types.x, static_cast<ScalarType>(sizes_types.z));
-  const auto b = val_at_offs<om_t>(
+  const auto b = operand_at_offs<om_t, T>(
       other, tid * sizes_types.y, static_cast<ScalarType>(sizes_types.w));
   out[tid] = static_cast<res_t>(f(a, b));
 }
@@ -960,9 +970,9 @@ kernel void binary_dense_broadcast_cast(
     uint tid [[thread_position_in_grid]]) {
   F f;
   using res_t = result_of<F, T, T>;
-  const auto a = val_at_offs<om_t>(
+  const auto a = operand_at_offs<om_t, T>(
       input, tid * sizes_types.x, static_cast<ScalarType>(sizes_types.z));
-  const auto b = val_at_offs<om_t>(
+  const auto b = operand_at_offs<om_t, T>(
       broadcast,
       (tid % broadcast_numel) * sizes_types.y,
       static_cast<ScalarType>(sizes_types.w));
@@ -979,11 +989,11 @@ kernel void binary_dense_broadcast_rhs_cast(
     uint tid [[thread_position_in_grid]]) {
   F f;
   using res_t = result_of<F, T, T>;
-  const auto a = val_at_offs<om_t>(
+  const auto a = operand_at_offs<om_t, T>(
       broadcast,
       (tid % broadcast_numel) * sizes_types.x,
       static_cast<ScalarType>(sizes_types.z));
-  const auto b = val_at_offs<om_t>(
+  const auto b = operand_at_offs<om_t, T>(
       input, tid * sizes_types.y, static_cast<ScalarType>(sizes_types.w));
   out[tid] = static_cast<res_t>(f(a, b));
 }
@@ -1057,10 +1067,10 @@ kernel void binary_dense_scalar_cast(
     uint tid [[thread_position_in_grid]]) {
   F f;
   using res_t = result_of<F, T, T>;
-  const auto a = val_at_offs<om_t>(
+  const auto a = operand_at_offs<om_t, T>(
       input, tid * sizes_types.x, static_cast<ScalarType>(sizes_types.z));
   const auto b =
-      val_at_offs<om_t>(scalar, 0, static_cast<ScalarType>(sizes_types.w));
+      operand_at_offs<om_t, T>(scalar, 0, static_cast<ScalarType>(sizes_types.w));
   out[tid] = static_cast<res_t>(f(a, b));
 }
 
@@ -1074,8 +1084,8 @@ kernel void binary_dense_scalar_lhs_cast(
   F f;
   using res_t = result_of<F, T, T>;
   const auto a =
-      val_at_offs<om_t>(scalar, 0, static_cast<ScalarType>(sizes_types.z));
-  const auto b = val_at_offs<om_t>(
+      operand_at_offs<om_t, T>(scalar, 0, static_cast<ScalarType>(sizes_types.z));
+  const auto b = operand_at_offs<om_t, T>(
       input, tid * sizes_types.y, static_cast<ScalarType>(sizes_types.w));
   out[tid] = static_cast<res_t>(f(a, b));
 }
@@ -1505,11 +1515,11 @@ kernel void ternary_strided_cast(
   const auto other2_offs = offset_from_coord(pos, other2_strides, ndim);
   const auto output_offs = offset_from_coord(pos, output_strides, ndim);
   const auto a =
-      val_at_offs<om_t>(input, input_offs, static_cast<ScalarType>(types.x));
+      operand_at_offs<om_t, T>(input, input_offs, static_cast<ScalarType>(types.x));
   const auto b =
-      val_at_offs<om_t>(other1, other1_offs, static_cast<ScalarType>(types.y));
+      operand_at_offs<om_t, T>(other1, other1_offs, static_cast<ScalarType>(types.y));
   const auto c =
-      val_at_offs<om_t>(other2, other2_offs, static_cast<ScalarType>(types.z));
+      operand_at_offs<om_t, T>(other2, other2_offs, static_cast<ScalarType>(types.z));
   ref_at_offs<res_t>(output, output_offs) = static_cast<res_t>(f(a, b, c));
 }
 
@@ -1538,10 +1548,10 @@ kernel void ternary_dense_cast(
   F f;
   using res_t = result_of<F, T, T, T>;
   const auto a =
-      val_at_offs<om_t>(input, tid * sizes.x, static_cast<ScalarType>(types.x));
-  const auto b = val_at_offs<om_t>(
+      operand_at_offs<om_t, T>(input, tid * sizes.x, static_cast<ScalarType>(types.x));
+  const auto b = operand_at_offs<om_t, T>(
       other1, tid * sizes.y, static_cast<ScalarType>(types.y));
-  const auto c = val_at_offs<om_t>(
+  const auto c = operand_at_offs<om_t, T>(
       other2, tid * sizes.z, static_cast<ScalarType>(types.z));
   out[tid] = static_cast<res_t>(f(a, b, c));
 }
