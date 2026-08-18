@@ -8395,14 +8395,15 @@ def addcmul(self, tensor1, tensor2, *, value=1):
     t1_loader = tensor1.make_loader()
     t2_loader = tensor2.make_loader()
 
-    # FMA/mul_rn are floating-point only. ops.fma and ops.mul_rn have no Triton
-    # override, so both lower to the generic forms in OpOverrides on any Triton
-    # backend, MPS included.
+    # FMA here exists to match eager, which uses a hardware FMA for addcmul on
+    # CUDA and XPU. ATen's MPS addcmul does not: it rounds the product and the
+    # add separately, so contracting them moves the compiled result one ulp away
+    # from eager rather than toward it.
     device = self.get_device()
     use_fma = (
         dtype.is_floating_point
         and device is not None
-        and device.type in ["cuda", "xpu", "mps"]
+        and device.type in ["cuda", "xpu"]
     )
 
     def inner_fn(idx):
