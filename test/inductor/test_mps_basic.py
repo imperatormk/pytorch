@@ -26,6 +26,8 @@ importlib.import_module("filelock")
 pytorch_test_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(pytorch_test_dir)
 
+from torch._inductor import config as inductor_config
+
 from inductor.test_torchinductor import (  # @manual=fbcode//caffe2/test/inductor:test_inductor-library
     check_model_gpu,
     CommonTemplate,
@@ -376,7 +378,9 @@ class MPSBasicTestsAOTI(TestCase):
         self.check_model(m, inp)
 
     def test_tanh_codegen(self):
-        # Verify that tanh uses metal::precise::tanh in generated Metal shader
+        # Verify that tanh lowers to the accurate primitive of whichever MPS
+        # backend is active: metal::precise::tanh for "metal" (not the clamped
+        # version), libdevice.tanh for "triton".
         class Model(torch.nn.Module):
             def forward(self, x):
                 return x.tanh()
@@ -389,8 +393,10 @@ class MPSBasicTestsAOTI(TestCase):
 
         with open(os.path.splitext(package_path)[0] + ".cpp") as cpp:
             src_code = cpp.read()
-            # Verify metal::precise::tanh is used (not clamped version)
-            FileCheck().check("metal::precise::tanh").run(src_code)
+            if inductor_config.mps_backend == "triton":
+                FileCheck().check("libdevice.tanh").run(src_code)
+            else:
+                FileCheck().check("metal::precise::tanh").run(src_code)
 
     def test_fallback_mps(self):
         class M(torch.nn.Module):
@@ -488,8 +494,17 @@ class MPSBasicTestsAOTI(TestCase):
         ep = torch.export.export(model, example_inputs)
         package_path = torch._export.aot_compile(ep.module(), example_inputs)
 
-        target_str = "aoti_torch_mps_get_kernel_function("
-        target_count = 1
+        # The point is that a repeated kernel is bound once and reused rather
+        # than re-fetched per call site. Each backend spells that differently:
+        # "metal" fetches the function from the shader library, "triton" loads
+        # each kernel behind a one-shot null guard. The triton arm fuses the
+        # two sin+mm pairs into two templates, so the count is per kernel.
+        if inductor_config.mps_backend == "triton":
+            target_str = "= loadKernel("
+            target_count = 2
+        else:
+            target_str = "aoti_torch_mps_get_kernel_function("
+            target_count = 1
 
         with open(os.path.splitext(package_path)[0] + ".cpp") as cpp:
             src_code = cpp.read()
