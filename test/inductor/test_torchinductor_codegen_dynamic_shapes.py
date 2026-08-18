@@ -183,12 +183,7 @@ test_failures = {
     "test_flip_zero_dim_dynamic_shapes": TestFailure(("cpu",)),
     "test_flip_zero_dim_backward_dynamic_shapes": TestFailure(("cpu",)),
     "test_pad_single_dynamic_shapes": TestFailure(("cpu",)),
-    "test_slice_scatter_dtype_consistency_dynamic_shapes": TestFailure(
-        (
-            "cpu",
-            "mps",
-        )
-    ),
+    "test_slice_scatter_dtype_consistency_dynamic_shapes": TestFailure(("cpu",)),
     "test_embedding_sparse_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu", "mps")),
     #
     # Failed to find for loop/triton kernel:
