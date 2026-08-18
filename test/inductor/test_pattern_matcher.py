@@ -83,6 +83,21 @@ register_custom_class(OpaqueScaleFactor, typ="constant", hoist=True)
 class TestPatternMatcher(TestCase):
     device_type = GPU_TYPE
 
+    def assertGemmKeptFused(self, code, aten_name):
+        """Assert a fused gemm survived as a fused gemm.
+
+        These tests check for an extern_kernels call to prove the bias was not
+        unfused into a bare mm plus a separate pointwise. Which backend renders
+        it is an autotune outcome, though: a Triton template that wins keeps the
+        op equally fused, and on backends where the template usually wins there
+        is no extern call to find. Accept either, and in both cases require that
+        no bare mm/bmm appeared.
+        """
+        bare = "mm" if aten_name in ("addmm", "mm") else "bmm"
+        self.assertNotIn(f"extern_kernels.{bare}(", code)
+        if f"extern_kernels.{aten_name}(" not in code:
+            FileCheck().check_regex(rf"triton_tem_fused_\w*{bare}\w*").run(code)
+
     def common(
         self,
         fn,
@@ -1500,7 +1515,7 @@ class TestPatternMatcher(TestCase):
             return torch.ops.aten.addmm(inp, a, b)
 
         _, (code) = run_and_get_code(fn, args[0], args[1], args[2])
-        FileCheck().check("extern_kernels.addmm(").run(code[0])
+        self.assertGemmKeptFused(code[0], "addmm")
 
         @torch.compile()
         def fn2(inp, a, b):
@@ -1532,7 +1547,7 @@ class TestPatternMatcher(TestCase):
 
         actual, (code) = run_and_get_code(fn, args[0], args[1], args[2])
         self.assertEqual(actual, torch.baddbmm(*args))
-        FileCheck().check("extern_kernels.baddbmm(").run(code[0])
+        self.assertGemmKeptFused(code[0], "baddbmm")
 
         @torch.compile()
         def fn2(inp, a, b):
@@ -1717,7 +1732,7 @@ class TestPatternMatcher(TestCase):
             return torch.nn.functional.gelu(torch.ops.aten.addmm(inp, a, b))
 
         _, (code) = run_and_get_code(fn, args[0], args[1], args[2])
-        FileCheck().check("extern_kernels.addmm(").run(code[0])
+        self.assertGemmKeptFused(code[0], "addmm")
 
     @parametrize("dtype", [torch.bfloat16, torch.float16])
     @inductor_config.patch(
