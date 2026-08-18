@@ -1763,9 +1763,11 @@ class TestMaxAutotune(TestCase):
             patch.object(AlgorithmSelectorCache, "lookup", mock_lookup),
             config.patch(benchmark_epilogue_fusion=multi_template),
         ):
-            with self.assertRaises(BackendCompilerFailed) as context:
-                torch.compile(lambda a, b: a.matmul(b))(a, b)
-            self.assertIn("NoValidChoicesError", str(context.exception))
+            # Since #171094 a run whose benchmarks all return inf warns and
+            # keeps a choice instead of failing the compile, so what is left to
+            # check is that the graph still produces the right answer.
+            res = torch.compile(lambda a, b: a.matmul(b))(a, b)
+            self.assertEqual(res, a.matmul(b))
 
     @config.patch(force_shape_pad=True, max_autotune=True)
     def test_linear_and_cel(self):
