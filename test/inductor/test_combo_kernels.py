@@ -1223,10 +1223,12 @@ class ComboKernelTests(TestCase):
         torch._dynamo.reset()
         torch._inductor.metrics.reset()
         out_eager = m(*inps)
-        out_compiled = torch.compile(m)(*inps)
+        out_compiled, (code,) = run_and_get_code(torch.compile(m), *inps)
         torch.testing.assert_close(out_eager, out_compiled, rtol=1e-4, atol=1e-4)
-        # Very-large reductions split out instead of co-fused: 5 kernels (4 = the regression).
-        self.assertEqual(torch._inductor.metrics.generated_kernel_count, 5)
+        # The regression co-fused both reductions into a single combo kernel. Count the
+        # reduction kernels rather than the total: how many pointwise kernels precede
+        # them is a property of the backend's lowering, not of combo partitioning.
+        self.assertEqual(len(re.findall(r"def (triton_red_\w+)", code)), 2)
 
     @requires_gpu_and_triton
     @skipIfXpu(
