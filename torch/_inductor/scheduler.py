@@ -6020,9 +6020,11 @@ class Scheduler:
                         )
 
                         is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
-                        if is_nvgemm_choice and fusible_choice:
-                            # NVGEMM register allocations are fixed by cutlass.operators;
-                            # Triton's n_regs/n_spills heuristic doesn't apply.
+                        # A backend that reports no register count (MPS) gives
+                        # the n_regs/n_spills heuristic nothing to weigh, same
+                        # as NVGEMM whose allocation cutlass.operators fixes.
+                        no_reg_info = not getattr(choice, "n_regs", None)
+                        if (is_nvgemm_choice or no_reg_info) and fusible_choice:
                             ms_fused_choice = choice
                             break
                         elif res and fusible_choice:
