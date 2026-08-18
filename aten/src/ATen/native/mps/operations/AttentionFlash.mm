@@ -182,7 +182,11 @@ std::tuple<Tensor, Tensor, Tensor> _scaled_dot_product_attention_flash_mps_backw
 
   // dq is accumulated atomically by the key-parallel kernel, so it starts at
   // zero; dk/dv are owned outright by one threadgroup each and are written once.
-  auto dq = at::zeros_like(q);
+  // The kernel binds dQ as `device atomic_float*` and atomically adds 4-byte
+  // floats into it, so the buffer must be float32 whatever q's dtype is:
+  // accumulating into a 2-byte half/bfloat buffer makes every atomic overlap
+  // its neighbour and the result is NaN. Cast back at the end.
+  auto dq_acc = at::zeros(q.sizes(), q.options().dtype(at::kFloat));
   auto dk = at::empty_like(k);
   auto dv = at::empty_like(v);
   auto delta = at::empty_like(lse);
@@ -205,7 +209,11 @@ std::tuple<Tensor, Tensor, Tensor> _scaled_dot_product_attention_flash_mps_backw
   fill(params.O_strides, o);
   fill(params.L_strides, lse);
 
-  const std::string dtype = q.scalar_type() == at::kHalf ? "half" : "float";
+  // bfloat16 must pick its own kernel: falling through to "float" reads
+  // 2-byte elements as 4-byte ones and the whole result is garbage.
+  const std::string dtype = q.scalar_type() == at::kHalf      ? "half"
+      : q.scalar_type() == at::kBFloat16                      ? "bfloat"
+                                                              : "float";
   const std::string causal = is_causal ? "_causal" : "";
   // head_dim 40 gets a variant with a 32-wide query tile: at BD=40 the staging
   // buffers leave enough of the 32768-byte threadgroup budget for it, which
@@ -245,13 +253,13 @@ std::tuple<Tensor, Tensor, Tensor> _scaled_dot_product_attention_flash_mps_backw
           threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
 
       [enc setComputePipelineState:bwdPSO];
-      mtl_setArgs(enc, q, k, v, go, lse, delta, dk, dv, dq, params);
+      mtl_setArgs(enc, q, k, v, go, lse, delta, dk, dv, dq_acc, params);
       [enc dispatchThreadgroups:MTLSizeMake(nK, 1, B * H)
           threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
     }
   });
 
-  return std::make_tuple(dq, dk, dv);
+  return std::make_tuple(dq_acc.to(q.scalar_type()), dk, dv);
 }
 
 } // namespace at::native

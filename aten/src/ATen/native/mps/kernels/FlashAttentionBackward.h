@@ -717,16 +717,19 @@ flash_attn_bwd_fused(
 // 111104 and fails PSO creation.
 INSTANTIATE_FLASH_BWD_NAMED("", float, 16, 16, 64, 2, 2, 128)
 INSTANTIATE_FLASH_BWD_NAMED("", half, 16, 16, 64, 2, 2, 128)
+INSTANTIATE_FLASH_BWD_NAMED("", bfloat, 16, 16, 64, 2, 2, 128)
 // head_dim 40 (SD1.5 UNet) leaves enough budget for a 32-wide query tile, which
 // halves the inner pass count against the BD=64 variant.
 INSTANTIATE_FLASH_BWD_NAMED("_d40", float, 32, 16, 40, 2, 2, 128)
 INSTANTIATE_FLASH_BWD_NAMED("_d40", half, 32, 16, 40, 2, 2, 128)
+INSTANTIATE_FLASH_BWD_NAMED("_d40", bfloat, 32, 16, 40, 2, 2, 128)
 // head_dim 128 doubles LD, so the 16-wide tiles above would need 43136 bytes.
 // Halving both tiles brings it to 21056. BQ=BK=8 is one fragment per axis, so
 // the warp grid has to be 1x1: 2x2 leaves three of four warps with no band and
 // the dK/dV accumulators come out wrong.
 INSTANTIATE_FLASH_BWD_NAMED("_d128", float, 8, 8, 128, 1, 1, 32)
 INSTANTIATE_FLASH_BWD_NAMED("_d128", half, 8, 8, 128, 1, 1, 32)
+INSTANTIATE_FLASH_BWD_NAMED("_d128", bfloat, 8, 8, 128, 1, 1, 32)
 
 #define INSTANTIATE_FLASH_BWD_FUSED(SUF, DTYPE, BQ, BK, BD, WM, WN)              \
   template [[host_name("flash_attn_bwd_fused" SUF "_" #DTYPE)]] [[kernel]] void  \
@@ -766,5 +769,7 @@ INSTANTIATE_FLASH_BWD_NAMED("_d128", half, 8, 8, 128, 1, 1, 32)
 // quarters the inner pass count against the two-phase kernel above.
 INSTANTIATE_FLASH_BWD_FUSED("_d40", float, 64, 32, 40, 2, 2)
 INSTANTIATE_FLASH_BWD_FUSED("_d40", half, 64, 32, 40, 2, 2)
+INSTANTIATE_FLASH_BWD_FUSED("_d40", bfloat, 64, 32, 40, 2, 2)
 INSTANTIATE_FLASH_BWD_FUSED("", float, 32, 32, 64, 2, 2)
 INSTANTIATE_FLASH_BWD_FUSED("", half, 32, 32, 64, 2, 2)
+INSTANTIATE_FLASH_BWD_FUSED("", bfloat, 32, 32, 64, 2, 2)
