@@ -225,7 +225,16 @@ class MixOrderReductionTest(TestBase):
         def f(x):
             return x.sum(dim=-1), x.sum(dim=0)
 
-        M = 32768 * 1024 if torch.version.hip is not None else 32768 * 256
+        if torch.version.hip is not None:
+            M = 32768 * 1024
+        elif GPU_TYPE == "mps":
+            # MPS reports only 16 SMs, so Reduction.num_splits stops splitting
+            # the second layer at a much smaller intermediate numel than on
+            # CUDA. 32768 * 256 yields a 2 layer split here; this M is the size
+            # that actually produces 3 layers.
+            M = 32768 * 64
+        else:
+            M = 32768 * 256
         x = torch.randn(M, 2, dtype=torch.float, device=GPU_TYPE)
         self.check_numeric(f, (x,))
         # We don't do mix order reduction for split redutions
