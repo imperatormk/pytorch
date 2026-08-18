@@ -1584,8 +1584,15 @@ class MemoryCoalescingTest(MockSchedulerTest):
             def foo(x, y):
                 return x + y.to(x.dtype)
 
-            x = torch.rand(256, 256, device=GPU_TYPE)
-            y_dtype = torch.float if not downcast_transposed_v else torch.float64
+            # The analysis only cares that the transposed operand is twice the
+            # width of x, so halve x instead of doubling y on devices without
+            # float64.
+            has_f64 = GPU_TYPE != "mps"
+            x_dtype = torch.float if has_f64 or not downcast_transposed_v else torch.bfloat16
+            x = torch.rand(256, 256, device=GPU_TYPE, dtype=x_dtype)
+            y_dtype = torch.float
+            if downcast_transposed_v:
+                y_dtype = torch.float64 if has_f64 else torch.float
             y = torch.rand(256, 256, device=GPU_TYPE, dtype=y_dtype).T
             if dynamic:
                 torch._dynamo.mark_dynamic(x, 0)
