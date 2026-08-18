@@ -169,8 +169,12 @@ class CooperativeReductionTests(TestCase):
             if any(isinstance(t, torch.Tensor) and t.device.type == "mps" for t in args)
             else None
         )
+        # dtype=None means "whatever the inputs already are", i.e. float32 here.
+        # Leaving the reference at float32 makes the oracle less accurate than
+        # the kernel it judges: on the 1M-element vector_norm the CPU float32
+        # reduction sits 2.3e-5 from its own float64 value, outside rtol.
         ref_dtype = dtype
-        if dtype in (torch.float16, torch.float32):
+        if dtype in (None, torch.float16, torch.float32):
             ref_dtype = torch.float64
 
         # Move first, THEN upcast. Asking one .to() for both a CPU destination
