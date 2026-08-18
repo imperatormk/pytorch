@@ -1233,6 +1233,11 @@ class ComboKernelTests(TestCase):
         msg="dynamic_scale_rblock requires GPU-specific device properties "
         "(major, regs_per_multiprocessor, warp_size) not available on XPU"
     )
+    @unittest.skipIf(
+        GPU_TYPE == "mps",
+        "dynamic_scale_rblock requires GPU-specific device properties "
+        "(major, regs_per_multiprocessor, warp_size) not available on MPS",
+    )
     @torch._inductor.config.patch(
         {
             "combo_kernel_per_subkernel_blocks": True,
