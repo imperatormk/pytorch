@@ -46,6 +46,8 @@ if HAS_GPU:
 
 class MockScheduler:
     available_buffer_names = ()
+    # prune_weak_deps looks buffers up here; the mock owns none.
+    name_to_buf: dict[str, object] = {}
 
     @staticmethod
     def get_backend(cls, *args):
