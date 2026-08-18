@@ -310,7 +310,13 @@ def _bwd_configs(kv_len, head_dim):
     return out
 
 
-@register_lowering(aten._scaled_dot_product_attention_flash_mps_backward)
+# type_promotion_kind must be None: the default promotes every operand to a
+# common dtype, and logsumexp is float32, so q/k/v/grad_out would arrive as
+# float32 copies -- one of which then reaches an mm against a half weight.
+@register_lowering(
+    aten._scaled_dot_product_attention_flash_mps_backward,
+    type_promotion_kind=None,
+)
 def scaled_dot_product_attention_flash_mps_backward(
     grad_out,
     query,
@@ -444,7 +450,7 @@ def _bwd_fallback(grad_out, query, key, value, output, logsumexp, is_causal, sca
     )(grad_out, query, key, value, output, logsumexp, is_causal, scale=scale)
 
 
-@register_lowering(aten._scaled_dot_product_attention_flash_mps)
+@register_lowering(aten._scaled_dot_product_attention_flash_mps, type_promotion_kind=None)
 def scaled_dot_product_attention_flash_mps(query, key, value, is_causal=False, scale=None):
     """Triton forward for the MPS flash op, emitting the log-sum-exp.
 
@@ -465,7 +471,6 @@ def scaled_dot_product_attention_flash_mps(query, key, value, is_causal=False, s
         not isinstance(head_dim, (int, sympy.Integer))
         or int(head_dim) > 128
         or any(x.get_device().type != "mps" for x in (query, key, value))
-        or query.get_dtype() != torch.float32
     ):
         return _flash_fallback(query, key, value, is_causal, scale)
     head_dim = int(head_dim)

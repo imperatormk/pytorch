@@ -86,7 +86,7 @@
         tl.store(
             DQ + off_z * stride_dqz + off_h * stride_dqh
             + offs_m[:, None] * stride_dqm + offs_d[None, :] * stride_dqk,
-            dq,
+            dq.to(Q.dtype.element_ty),
             mask=m_mask[:, None] & d_mask[None, :],
         )
         # Phase 1 writes no dK; the store_output below is skipped for these
@@ -137,7 +137,7 @@
         tl.store(
             DV + off_z * stride_dvz + off_h * stride_dvh
             + offs_n_out[:, None] * stride_dvn + offs_d[None, :] * stride_dvk,
-            dv,
+            dv.to(V.dtype.element_ty),
             mask=n_mask[:, None] & d_mask[None, :],
         )
         out_mask = n_mask[:, None] & d_mask[None, :]
