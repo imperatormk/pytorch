@@ -6372,7 +6372,20 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
             timings = self._choice_timings[hint_override]
             if timings:
                 best = min(timings.values())
-                lines = [f"AUTOTUNE {self.get_name()} ({len(timings)} choices)"]
+                # With the operand shapes and dtypes, as the eager path's
+                # header carries them: `buf106` alone does not say which
+                # matmul this is, which is the one thing a reader of a slow
+                # autotune line needs. Guarded because a shape may be
+                # symbolic and this display must not take the compile down.
+                head = f"AUTOTUNE {self.get_name()} ({len(timings)} choices)"
+                try:
+                    operands = ", ".join(
+                        f"{tuple(n.get_size())}:{n.get_dtype()}" for n in self.inputs
+                    )
+                    head += f"  {operands} -> {tuple(self.get_size())}:{self.get_dtype()}"
+                except Exception:
+                    pass
+                lines = [head]
                 for choice in sorted(timings, key=timings.__getitem__)[
                     : (config.autotune_num_choices_displayed or 10)
                 ]:
