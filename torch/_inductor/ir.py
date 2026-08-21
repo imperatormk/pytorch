@@ -6321,6 +6321,7 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
         choice_timings_fn: Callable[[int | None], dict[ChoiceCaller, float]],
         unfiltered_choices: list[ChoiceCaller],
         allowed_prologue_inps: OrderedSet[str],
+        op_name: str = "",
     ) -> None:
         super().__init__(
             layout=layout,
@@ -6328,6 +6329,10 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
             make_kernel_render=None,
             allowed_prologue_inps=allowed_prologue_inps,
         )
+        # The operation this was created for -- "addmm", "bmm". Kept so the
+        # deferred autotune header can name it, as the eager one does; the
+        # buffer's own name is `buf106`, which identifies nothing.
+        self.op_name = op_name
         self._choice_timings_fn = choice_timings_fn
         self._choice_timings: dict[int | None, dict[ChoiceCaller, float]] = {}
         self._choices: list[ChoiceCaller] = unfiltered_choices
@@ -6372,20 +6377,30 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
             timings = self._choice_timings[hint_override]
             if timings:
                 best = min(timings.values())
-                # With the operand shapes and dtypes, as the eager path's
-                # header carries them: `buf106` alone does not say which
-                # matmul this is, which is the one thing a reader of a slow
-                # autotune line needs. Guarded because a shape may be
-                # symbolic and this display must not take the compile down.
-                head = f"AUTOTUNE {self.get_name()} ({len(timings)} choices)"
+                # Named and shaped the way the eager path's header is
+                # (AlgorithmSelectorCache.log_results). `buf106` on its own
+                # identifies nothing, and the operation and its shapes are
+                # what a reader of a slow autotune line is after.
+                #
+                # Guarded: a symbolic shape must not take the compile down for
+                # the sake of a log line.
+                who = self.op_name or self.get_name()
+                lines = [f"AUTOTUNE {who} ({len(timings)} choices)"]
                 try:
-                    operands = ", ".join(
-                        f"{tuple(n.get_size())}:{n.get_dtype()}" for n in self.inputs
+                    sizes = ", ".join(
+                        "x".join(map(str, n.get_size())) for n in self.original_inputs
                     )
-                    head += f"  {operands} -> {tuple(self.get_size())}:{self.get_dtype()}"
+                    lines[0] = f"AUTOTUNE {who}({sizes}) ({len(timings)} choices)"
+                    lines.append(
+                        "  strides: "
+                        + ", ".join(str(tuple(n.get_stride())) for n in self.original_inputs)
+                    )
+                    lines.append(
+                        "  dtypes: "
+                        + ", ".join(str(n.get_dtype()) for n in self.original_inputs)
+                    )
                 except Exception:
                     pass
-                lines = [head]
                 for choice in sorted(timings, key=timings.__getitem__)[
                     : (config.autotune_num_choices_displayed or 10)
                 ]:

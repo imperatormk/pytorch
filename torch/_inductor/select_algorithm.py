@@ -4295,6 +4295,7 @@ class AlgorithmSelectorCache(PersistentCache):
                         get_timings,
                         choices,
                         allowed_prologue_inps,
+                        name,
                     )
                 ),
                 None,
