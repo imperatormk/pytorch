@@ -957,9 +957,15 @@ kernel void avg_pool_backward(
 
 // One thread per grad_output element; each scatters its share into the bin it
 // came from. Bins overlap when O does not divide I, hence the atomic add.
-template <typename T>
+//
+// `A` is the accumulator's type and is not always `T`. The half atomic is a
+// CAS loop that rounds to half on every iteration, so an input cell inside
+// several overlapping bins gets an answer that depends on the order the adds
+// land in -- not even reproducible run to run. The host widens the
+// accumulator to float for the narrow types and narrows once at the end.
+template <typename T, typename A>
 kernel void adaptive_avg_pool_backward(
-    device AtomicType_t<T>* grad_input [[buffer(0)]],
+    device AtomicType_t<A>* grad_input [[buffer(0)]],
     constant T* grad_output [[buffer(1)]],
     constant AdaptiveAvgPoolingParams<5>& params [[buffer(2)]],
     uint tid [[thread_position_in_grid]]) {
@@ -990,7 +996,13 @@ kernel void adaptive_avg_pool_backward(
 
   int32_t start[3];
   int32_t end[3];
-  int32_t count = 1;
+
+  // Divided ONCE PER DIMENSION, in the element's own type, because that is
+  // what the CPU kernel does (`grad_output / kh / kw`, AdaptiveAvgPoolKernel
+  // .cpp:290). Dividing by the product instead rounds once where CPU rounds
+  // twice, and at half precision the two disagree by a ULP whenever the
+  // window area is not a power of two -- a 3x3 window is enough.
+  A grad_val = static_cast<A>(*grad_output);
 
   for (auto dim = 0; dim < pooling_dims; dim++) {
     start[dim] = adaptive_start(
@@ -1001,21 +1013,19 @@ kernel void adaptive_avg_pool_backward(
         pooling_dim_indices[dim],
         grad_input_sizes[dim],
         grad_output_sizes[leading_dims + dim]);
-    count *= (end[dim] - start[dim]);
+    grad_val /= static_cast<A>(end[dim] - start[dim]);
   }
-
-  auto grad_val = *grad_output / static_cast<T>(count);
 
   if (pooling_dims == 1) {
     for (auto i0 = start[0]; i0 < end[0]; i0++) {
-      AtomicType<T>::atomic_add(
+      AtomicType<A>::atomic_add(
           grad_input, offsets.input_leading + grad_input_strides[0] * i0, grad_val);
     }
   } else if (pooling_dims == 2) {
     for (auto i0 = start[0]; i0 < end[0]; i0++) {
       auto offset0 = grad_input_strides[0] * i0;
       for (auto i1 = start[1]; i1 < end[1]; i1++) {
-        AtomicType<T>::atomic_add(
+        AtomicType<A>::atomic_add(
             grad_input,
             offsets.input_leading + offset0 + grad_input_strides[1] * i1,
             grad_val);
@@ -1027,7 +1037,7 @@ kernel void adaptive_avg_pool_backward(
       for (auto i1 = start[1]; i1 < end[1]; i1++) {
         auto offset1 = offset0 + grad_input_strides[1] * i1;
         for (auto i2 = start[2]; i2 < end[2]; i2++) {
-          AtomicType<T>::atomic_add(
+          AtomicType<A>::atomic_add(
               grad_input,
               offsets.input_leading + offset1 + grad_input_strides[2] * i2,
               grad_val);
@@ -1201,7 +1211,7 @@ REGISTER_FRACTIONAL_POOL_OP(bfloat);
       uint tid [[thread_position_in_grid]]);                   \
                                                                \
   template [[host_name("adaptive_avg_pool_backward_" #DTYPE)]] \
-  kernel void adaptive_avg_pool_backward<DTYPE>(               \
+  kernel void adaptive_avg_pool_backward<DTYPE, DTYPE>(        \
       device AtomicType_t<DTYPE> * grad_input [[buffer(0)]],   \
       constant DTYPE * grad_output [[buffer(1)]],              \
       constant AdaptiveAvgPoolingParams<5> & params            \
@@ -1221,3 +1231,17 @@ REGISTER_POOL_OP(bool);
 REGISTER_POOL_BACKWARD_OP(float);
 REGISTER_POOL_BACKWARD_OP(half);
 REGISTER_POOL_BACKWARD_OP(bfloat);
+
+// The float-accumulating adaptive backward, for the narrow types. Named by the
+// GRAD_OUTPUT type because that is what the host has to select on; the `f32`
+// suffix says where the sum is kept.
+#define REGISTER_ADAPTIVE_AVG_POOL_BACKWARD_F32_ACC(DTYPE)             \
+  template [[host_name("adaptive_avg_pool_backward_" #DTYPE "_f32")]]  \
+  kernel void adaptive_avg_pool_backward<DTYPE, float>(                \
+      device AtomicType_t<float> * grad_input [[buffer(0)]],           \
+      constant DTYPE * grad_output [[buffer(1)]],                      \
+      constant AdaptiveAvgPoolingParams<5> & params [[buffer(2)]],     \
+      uint tid [[thread_position_in_grid]]);
+
+REGISTER_ADAPTIVE_AVG_POOL_BACKWARD_F32_ACC(half);
+REGISTER_ADAPTIVE_AVG_POOL_BACKWARD_F32_ACC(bfloat);

@@ -379,6 +379,7 @@ if torch.backends.mps.is_available():
             "linalg.ldl_solve": None,
             "linalg.matrix_sqrth": None,
             "max_pool2d_with_indices_backward": [
+                torch.bool,
                 torch.int8,
                 torch.int16,
                 torch.int32,
@@ -608,9 +609,6 @@ if torch.backends.mps.is_available():
                 torch.float32,
             ],
             "float_power": None,
-            # MPS: input sizes must be divisible by output sizes
-            "nn.functional.adaptive_avg_pool1d": None,
-            "nn.functional.adaptive_avg_pool2d": None,
             # Convolution for integral types is not supported on MPS
             "nn.functional.conv1d": [torch.int64],
             "nn.functional.conv2d": [torch.int64],

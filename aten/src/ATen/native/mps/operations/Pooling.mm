@@ -529,6 +529,12 @@ static void max_pool_with_indices_backward_out_mps_template(Tensor& grad_input,
                                                             bool ceil_mode,
                                                             const int32_t pooling_dims,
                                                             const std::string& op_name) {
+  // The scatter accumulates with atomics, and there is no atomic bool -- which
+  // matches CPU, where this op is not implemented for Bool either. Checked
+  // here so the message names the type rather than surfacing as a missing
+  // Metal function.
+  TORCH_CHECK(input.scalar_type() != kBool, op_name, " not implemented for 'Bool'");
+
   auto [dims, output_size, kernel_size, stride, padding, dilation_opt] =
       process_pool_sizes(input, _kernel_size, _stride, _padding, _dilation, ceil_mode, pooling_dims, op_name);
 
@@ -1014,6 +1020,17 @@ void adaptive_avg_pool_backward_out_mps_template(const Tensor& grad_input,
     return;
   }
 
+  // Accumulated in float for the narrow types. An input cell inside
+  // overlapping bins receives one atomic_add per bin, and the half atomic is
+  // a CAS loop that rounds to half on every iteration -- so the answer
+  // depends on the order the adds land in and is not even reproducible run to
+  // run. Widening the accumulator makes each partial sum exact enough that
+  // the order stops mattering. Only non-divisible output sizes overlap, which
+  // is why divisible shapes always agreed with CPU.
+  const auto scalar = grad_input.scalar_type();
+  const bool widen = scalar == kHalf || scalar == kBFloat16;
+  const Tensor acc = widen ? at::zeros(grad_input.sizes(), grad_input.options().dtype(kFloat)) : grad_input;
+
   AdaptiveAvgPoolingParams<5> params;
   const auto dims = grad_input.dim();
 
@@ -1021,8 +1038,8 @@ void adaptive_avg_pool_backward_out_mps_template(const Tensor& grad_input,
   params.pooling_dims = pooling_dims;
 
   for (const auto dim : c10::irange(dims)) {
-    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(grad_input.size(dim));
-    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(grad_input.stride(dim));
+    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(acc.size(dim));
+    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(acc.stride(dim));
     params.output_sizes[dim] = safe_downcast<int32_t, int64_t>(grad_output.size(dim));
     params.output_strides[dim] = safe_downcast<int32_t, int64_t>(grad_output.stride(dim));
   }
@@ -1030,16 +1047,21 @@ void adaptive_avg_pool_backward_out_mps_template(const Tensor& grad_input,
   dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
     @autoreleasepool {
       id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
-      auto PSO = lib.getPipelineStateForFunc("adaptive_avg_pool_backward_" + scalarToMetalTypeString(grad_input));
+      auto PSO = lib.getPipelineStateForFunc("adaptive_avg_pool_backward_" +
+                                             scalarToMetalTypeString(grad_output) + (widen ? "_f32" : ""));
 
       getMPSProfiler().beginProfileKernel(PSO, op_name, {grad_output});
       [computeEncoder setComputePipelineState:PSO];
-      mtl_setArgs(computeEncoder, grad_input, grad_output, params);
+      mtl_setArgs(computeEncoder, acc, grad_output, params);
 
       mtl_dispatch1DJob(computeEncoder, PSO, numThreads);
       getMPSProfiler().endProfileKernel(PSO);
     }
   });
+
+  if (widen) {
+    grad_input.copy_(acc);
+  }
 }
 
 static void avg_pool_backward_out_mps_template(const Tensor& grad_input,
