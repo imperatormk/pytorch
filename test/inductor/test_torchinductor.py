@@ -13756,7 +13756,18 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             ]
 
         kwargs = aot_graph_input_parser(forward, device=self.device)
-        self.common(forward, [], kwargs=kwargs)
+        # The addmm contracts over K=4190, where the products sum to ~2619 in
+        # absolute value and cancel down to a result of ~52 -- so fp32
+        # rounding tracks the 2619 and lands around 1e-3. Splitting the
+        # reference's own matmul in half and re-adding it already moves 6593
+        # of 8192 elements past the default 1e-5, so the default asks for one
+        # particular summation order rather than for accuracy.
+        #
+        # Only MPS, where the reference is eager MPS rather than CPU: the
+        # other backends compare against a reference that tiles the same way
+        # they do, so the default holds there and should keep holding.
+        tol = {"atol": 1e-3, "rtol": 1e-3} if is_mps_backend(self.device) else {}
+        self.common(forward, [], kwargs=kwargs, **tol)
 
     @skip_if_gpu_halide
     @config.patch("halide.scheduler_cpu", "Mullapudi2016")
