@@ -614,11 +614,11 @@ static void fractional_max_pool2d_out_mps_template(const Tensor& input,
 // Shared by any max-pool variant whose forward recorded flat indices; unlike
 // max_pool_with_indices_backward_out_mps_template it takes no kernel geometry,
 // which fractional pooling does not have in that form.
-static void max_pool_indices_backward_out_mps_template(const Tensor& grad_input,
-                                                       const Tensor& grad_output,
-                                                       const Tensor& indices,
-                                                       const int32_t pooling_dims,
-                                                       const std::string& op_name) {
+void max_pool_indices_backward_out_mps_template(const Tensor& grad_input,
+                                                const Tensor& grad_output,
+                                                const Tensor& indices,
+                                                const int32_t pooling_dims,
+                                                const std::string& op_name) {
   const auto dims = static_cast<int32_t>(grad_input.ndimension());
   MPSStream* mpsStream = getCurrentMPSStream();
   const auto numThreads = grad_output.numel();
@@ -959,6 +959,48 @@ void adaptive_avg_pool_out_mps_template(const Tensor& output,
   });
 }
 
+void adaptive_max_pool_out_mps_template(const Tensor& output,
+                                        const Tensor& indices,
+                                        const Tensor& input,
+                                        const int32_t pooling_dims,
+                                        const std::string& op_name) {
+  TORCH_CHECK_NOT_IMPLEMENTED(!c10::isComplexType(input.scalar_type()), "Not implemented for complex");
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+  const auto numThreads = output.numel();
+  if (numThreads == 0) {
+    return;
+  }
+
+  AdaptiveMaxPoolingParams<5> params;
+  const auto dims = input.dim();
+
+  params.dims = dims;
+  params.pooling_dims = pooling_dims;
+
+  for (const auto dim : c10::irange(dims)) {
+    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(input.size(dim));
+    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(input.stride(dim));
+    params.output_sizes[dim] = safe_downcast<int32_t, int64_t>(output.size(dim));
+    params.output_strides[dim] = safe_downcast<int32_t, int64_t>(output.stride(dim));
+    params.indices_strides[dim] = safe_downcast<int32_t, int64_t>(indices.stride(dim));
+  }
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      auto PSO = lib.getPipelineStateForFunc("adaptive_max_pool_" + scalarToMetalTypeString(input));
+
+      getMPSProfiler().beginProfileKernel(PSO, op_name, {input});
+      [computeEncoder setComputePipelineState:PSO];
+      mtl_setArgs(computeEncoder, input, output, indices, params);
+
+      mtl_dispatch1DJob(computeEncoder, PSO, numThreads);
+      getMPSProfiler().endProfileKernel(PSO);
+    }
+  });
+}
+
 void adaptive_avg_pool_backward_out_mps_template(const Tensor& grad_input,
                                                  const Tensor& grad_output,
                                                  const int32_t pooling_dims,
@@ -1209,26 +1251,17 @@ TORCH_IMPL_FUNC(max_pool2d_with_indices_backward_out_mps)
  const Tensor& grad_input) {
   TORCH_CHECK_NOT_IMPLEMENTED(!c10::isComplexType(input.scalar_type()),
                               "Max pooling for complex is not supported for MPS");
-  mps::PoolingOpBlock pooling_op_block = ^PoolingOpFn(cachedGraph, desc) {
-    MPSGraph* mpsGraph = cachedGraph.graph();
-    return [mpsGraph maxPooling2DGradientWithGradientTensor:cachedGraph.gradOutputTensor
-                                               sourceTensor:cachedGraph.inputTensor
-                                                 descriptor:desc
-                                                       name:nil];
-  };
-  mps::pool2d_template(input,
-                       grad_input,
-                       indices,
-                       grad_output,
-                       kernel_size,
-                       stride,
-                       padding,
-                       dilation,
-                       ceil_mode,
-                       false,
-                       std::nullopt,
-                       pooling_op_block,
-                       "max_pool2d_indices_backward");
+  mps::max_pool_with_indices_backward_out_mps_template(const_cast<Tensor&>(grad_input),
+                                                       indices,
+                                                       input,
+                                                       grad_output,
+                                                       kernel_size,
+                                                       stride,
+                                                       padding,
+                                                       dilation,
+                                                       ceil_mode,
+                                                       /*pooling_dims=*/2,
+                                                       "max_pool2d_backward");
 }
 
 std::tuple<Tensor&, Tensor&> max_pool3d_with_indices_out_mps(const Tensor& input,

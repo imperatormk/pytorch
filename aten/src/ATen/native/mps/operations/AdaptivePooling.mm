@@ -15,8 +15,6 @@
 #include <ATen/ops/adaptive_max_pool2d_native.h>
 #include <ATen/ops/avg_pool2d.h>
 #include <ATen/ops/avg_pool2d_backward.h>
-#include <ATen/ops/max_pool2d_with_indices.h>
-#include <ATen/ops/max_pool2d_with_indices_backward.h>
 #include <ATen/ops/mul.h>
 #include <ATen/ops/ones_like.h>
 #endif
@@ -222,47 +220,18 @@ TORCH_IMPL_FUNC(adaptive_max_pool2d_out_mps)
                 "empty");
   }
 
-  int64_t isizeH = input.size(-2);
-  int64_t isizeW = input.size(-1);
-  int64_t osizeH = output_size[0];
-  int64_t osizeW = output_size[1];
-
-  int64_t strideH = 0, strideW = 0;
-  int64_t kernel_sizeH = 0, kernel_sizeW = 0;
-
-  mps::set_kernel_params(isizeH, isizeW, osizeH, osizeW, strideH, strideW, kernel_sizeH, kernel_sizeW);
-
-  at::max_pool2d_with_indices_out(const_cast<Tensor&>(output),
-                                  const_cast<Tensor&>(indices),
-                                  input,
-                                  IntArrayRef({kernel_sizeH, kernel_sizeW}),
-                                  IntArrayRef({strideH, strideW}),
-                                  IntArrayRef({0, 0}),
-                                  IntArrayRef({1, 1}),
-                                  false);
+  mps::adaptive_max_pool_out_mps_template(
+      output, indices, input.contiguous(), /*pooling_dims=*/2, "adaptive_max_pool2d");
 }
 
 TORCH_IMPL_FUNC(adaptive_max_pool2d_backward_out_mps)
 (const Tensor& gradOutput, const Tensor& input, const Tensor& indices, const Tensor& gradInput) {
-  int64_t isizeH = input.size(-2);
-  int64_t isizeW = input.size(-1);
-  int64_t osizeH = gradOutput.size(-2);
-  int64_t osizeW = gradOutput.size(-1);
-
-  int64_t strideH = 0, strideW = 0;
-  int64_t kernel_sizeH = 0, kernel_sizeW = 0;
-
-  mps::set_kernel_params(isizeH, isizeW, osizeH, osizeW, strideH, strideW, kernel_sizeH, kernel_sizeW);
-
-  at::max_pool2d_with_indices_backward_out(const_cast<Tensor&>(gradInput),
-                                           gradOutput,
-                                           input,
-                                           IntArrayRef({kernel_sizeH, kernel_sizeW}),
-                                           IntArrayRef({strideH, strideW}),
-                                           IntArrayRef({0, 0}),
-                                           IntArrayRef({1, 1}),
-                                           false,
-                                           indices);
+  const_cast<Tensor&>(gradInput).zero_();
+  if (gradInput.numel() == 0) {
+    return;
+  }
+  mps::max_pool_indices_backward_out_mps_template(
+      gradInput, gradOutput.contiguous(), indices.contiguous(), /*pooling_dims=*/2, "adaptive_max_pool2d_backward");
 }
 
 } // namespace at::native

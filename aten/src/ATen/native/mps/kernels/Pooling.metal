@@ -796,6 +796,114 @@ kernel void adaptive_avg_pool(
   *output = static_cast<T>(sum / static_cast<float>(count));
 }
 
+// One thread per output element. Indices are flattened over the pooling dims of
+// the input, matching the CPU kernel, and ties keep the first element scanned.
+template <typename T>
+kernel void adaptive_max_pool(
+    constant T* input [[buffer(0)]],
+    device T* output [[buffer(1)]],
+    device int64_t* indices [[buffer(2)]],
+    constant AdaptiveMaxPoolingParams<5>& params [[buffer(3)]],
+    uint tid [[thread_position_in_grid]]) {
+  auto pooling_dims = params.pooling_dims;
+  auto dims = params.dims;
+  auto input_sizes = params.input_sizes.data();
+  auto input_strides = params.input_strides.data();
+  auto output_sizes = params.output_sizes.data();
+  auto output_strides = params.output_strides.data();
+  auto indices_strides = params.indices_strides.data();
+  auto leading_dims = dims - pooling_dims;
+
+  int32_t pooling_dim_indices[3];
+
+  PoolOffsets offsets = find_pool_offsets(
+      output_sizes,
+      output_strides,
+      indices_strides,
+      input_strides,
+      pooling_dim_indices,
+      dims,
+      leading_dims,
+      /*return_indices=*/true,
+      tid);
+
+  output += offsets.output;
+  indices += offsets.indices;
+  input += offsets.input_leading;
+  input_sizes += leading_dims;
+  input_strides += leading_dims;
+
+  int32_t start[3];
+  int32_t end[3];
+
+  for (auto dim = 0; dim < pooling_dims; dim++) {
+    start[dim] = adaptive_start(
+        pooling_dim_indices[dim], input_sizes[dim], output_sizes[leading_dims + dim]);
+    end[dim] = adaptive_end(
+        pooling_dim_indices[dim], input_sizes[dim], output_sizes[leading_dims + dim]);
+  }
+
+  // Adaptive bins are never empty, so the first element is a valid seed.
+  T max_value;
+  int32_t max_index;
+
+  if (pooling_dims == 1) {
+    max_value = input[input_strides[0] * start[0]];
+    max_index = start[0];
+
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      auto input_value = input[input_strides[0] * i0];
+      bool is_greater = input_value > max_value;
+
+      max_value = is_greater ? input_value : max_value;
+      max_index = is_greater ? i0 : max_index;
+    }
+  } else if (pooling_dims == 2) {
+    auto size1 = input_sizes[1];
+    max_value = input[input_strides[0] * start[0] + input_strides[1] * start[1]];
+    max_index = start[0] * size1 + start[1];
+
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      auto offset0 = input_strides[0] * i0;
+
+      for (auto i1 = start[1]; i1 < end[1]; i1++) {
+        auto input_value = input[offset0 + input_strides[1] * i1];
+        bool is_greater = input_value > max_value;
+
+        max_value = is_greater ? input_value : max_value;
+        max_index = is_greater ? (i0 * size1 + i1) : max_index;
+      }
+    }
+  } else {
+    auto size2 = input_sizes[2];
+    auto size12 = input_sizes[1] * size2;
+    max_value = input
+        [input_strides[0] * start[0] + input_strides[1] * start[1] +
+         input_strides[2] * start[2]];
+    max_index = start[0] * size12 + start[1] * size2 + start[2];
+
+    for (auto i0 = start[0]; i0 < end[0]; i0++) {
+      auto offset0 = input_strides[0] * i0;
+
+      for (auto i1 = start[1]; i1 < end[1]; i1++) {
+        auto offset1 = offset0 + input_strides[1] * i1;
+
+        for (auto i2 = start[2]; i2 < end[2]; i2++) {
+          auto input_value = input[offset1 + input_strides[2] * i2];
+          bool is_greater = input_value > max_value;
+
+          max_value = is_greater ? input_value : max_value;
+          max_index =
+              is_greater ? (i0 * size12 + i1 * size2 + i2) : max_index;
+        }
+      }
+    }
+  }
+
+  *output = max_value;
+  *indices = max_index;
+}
+
 template <typename T>
 kernel void avg_pool_backward(
     device AtomicType_t<T>* grad_input [[buffer(0)]],
@@ -1066,6 +1174,14 @@ REGISTER_FRACTIONAL_POOL_OP(bfloat);
       constant DTYPE * input [[buffer(0)]],                                   \
       device DTYPE * output [[buffer(1)]],                                    \
       constant AdaptiveAvgPoolingParams<5> & params [[buffer(2)]],            \
+      uint tid [[thread_position_in_grid]]);                                  \
+                                                                              \
+  template [[host_name("adaptive_max_pool_" #DTYPE)]]                         \
+  kernel void adaptive_max_pool<DTYPE>(                                       \
+      constant DTYPE * input [[buffer(0)]],                                   \
+      device DTYPE * output [[buffer(1)]],                                    \
+      device int64_t* indices [[buffer(2)]],                                  \
+      constant AdaptiveMaxPoolingParams<5> & params [[buffer(3)]],            \
       uint tid [[thread_position_in_grid]]);
 
 #define REGISTER_POOL_BACKWARD_OP(DTYPE)                       \

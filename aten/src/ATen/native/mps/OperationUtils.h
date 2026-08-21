@@ -884,4 +884,18 @@ void adaptive_avg_pool_backward_out_mps_template(const Tensor& grad_input,
                                                  const int32_t pooling_dims,
                                                  const std::string& op_name);
 
+void adaptive_max_pool_out_mps_template(const Tensor& output,
+                                        const Tensor& indices,
+                                        const Tensor& input,
+                                        const int32_t pooling_dims,
+                                        const std::string& op_name);
+
+// Scatters grad_output back to the positions named by indices. grad_input must
+// already be zeroed.
+void max_pool_indices_backward_out_mps_template(const Tensor& grad_input,
+                                                const Tensor& grad_output,
+                                                const Tensor& indices,
+                                                const int32_t pooling_dims,
+                                                const std::string& op_name);
+
 } // namespace at::native::mps
