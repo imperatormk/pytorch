@@ -284,6 +284,14 @@ epilogue_fusion_with_atomic_add = False
 # fuse pointwise into template prologues
 prologue_fusion = prologue_fusion_enabled()
 
+# How much a prologue may increase the bytes a template reads before it is
+# refused (see `check_prologue_fusion_heuristics_fusable`). The default of
+# 1.1 is tuned for discrete GPUs, where a read the template would not
+# otherwise make crosses PCIe-fed device memory. A unified-memory device
+# pays less for the extra read and more for the extra kernel launch, so it
+# may want a larger number -- None keeps the discrete default.
+prologue_fusion_bytes_multiplier: float | None = None
+
 # do epilogue fusions before other fusions
 epilogue_fusion_first = False
 

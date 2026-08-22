@@ -7700,9 +7700,12 @@ class Scheduler:
         # otherwise not make crosses PCIe-fed device memory. Apple silicon is
         # unified: host and device share the same pool, so the cost curve for
         # trading extra in-kernel reads against an extra kernel launch is not
-        # the same one. Kept equal until measured -- this is the seam to tune.
+        # the same one. `prologue_fusion_bytes_multiplier` is the seam;
+        # unset keeps the discrete number for every device.
         BYTES_THRESHOLD_MULTIPLIER = (
-            1.1 if prologue_node.get_device().type == "mps" else 1.1
+            config.prologue_fusion_bytes_multiplier
+            if config.prologue_fusion_bytes_multiplier is not None
+            else 1.1
         )
         if read_bytes > (write_bytes * BYTES_THRESHOLD_MULTIPLIER):
             why("prologue fusion will not increase amount of bytes read in kernel")
