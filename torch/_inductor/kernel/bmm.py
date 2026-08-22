@@ -62,6 +62,7 @@ bmm_template = TritonTemplate(
     grid=bmm_grid,
     source=load_kernel_template("triton_bmm"),
     cache_codegen_enabled_for_template=True,
+    prologue_loads_all_inputs=True,
 )
 
 aten_bmm = ExternKernelChoice(torch.bmm, "at::bmm_out", op_overload=aten.bmm.out)
