@@ -18851,7 +18851,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     @requires_gpu_and_triton
     @config.patch(combo_kernels=True)
     @torch._dynamo.config.patch(assume_static_by_default=False)
-    @xfail_if_mps_triton_codegen
     def test_combo_kernel_store_mask(self):
         def fn(x):
             return (
