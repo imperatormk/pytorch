@@ -6174,9 +6174,13 @@ def max_pool2d_with_indices_backward(
     if grad_output.is_xpu:
         return NotImplemented
 
-    # MPS: Use native kernel. scatter_add has correctness issues on macOS 14
-    # (#163327) and numerical differences on macOS 15+.
-    if grad_output.device.type == "mps":
+    # MPS: scatter_add has correctness issues on macOS 14 (#163327). On 15+ it
+    # is correct, and the fp32 accumulation below is both closer to the float
+    # reference and deterministic, where the native kernel's half atomics are
+    # neither.
+    if grad_output.device.type == "mps" and not torch.backends.mps.is_macos_or_newer(
+        15, 0
+    ):
         return NotImplemented
 
     # Get spatial dimensions
