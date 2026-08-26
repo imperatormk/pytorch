@@ -533,9 +533,12 @@ class TestPatternMatcher(TestCase):
         def fn(a, b):
             return torch.mm(a, b.to(a.dtype))
 
+        # Explicitly cpu: the assertion is that the cast is NOT fused into the
+        # mm, which holds only off the accelerator, and a default-device mode
+        # would otherwise place these on it.
         args = (
-            torch.randn(8, 8),
-            torch.randint(-128, 127, (8, 8), dtype=torch.int8),
+            torch.randn(8, 8, device="cpu"),
+            torch.randint(-128, 127, (8, 8), dtype=torch.int8, device="cpu"),
         )
         self._test_mixed_impl(fn, args, False, False)
 

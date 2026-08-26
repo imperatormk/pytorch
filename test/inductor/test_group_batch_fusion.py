@@ -1850,7 +1850,13 @@ class TestCatLinearFusion(TestCase):
             counters.clear()
             torch._dynamo.reset()
             module = CatLinearMod([24, 24], 32, has_bias=has_bias)
-            parts = [torch.randn(8, 24), torch.randn(8, 24)]
+            # The module is explicitly cpu, so the inputs have to say so too:
+            # under a default-device mode these would otherwise land on the
+            # accelerator and disagree with the weight.
+            parts = [
+                torch.randn(8, 24, device="cpu"),
+                torch.randn(8, 24, device="cpu"),
+            ]
             ref = module(parts)
             with mock.patch.object(gbf, "CAT_LINEAR_CAT_TRAFFIC_FLOOR_BYTES", 0):
                 res = torch.compile(module)(parts)
@@ -1873,7 +1879,10 @@ class TestCatLinearFusion(TestCase):
             counters.clear()
             torch._dynamo.reset()
             module = CatLinearMod([24, 24], 32, has_bias=has_bias)
-            base = [torch.randn(8, 24), torch.randn(8, 24)]
+            base = [
+                torch.randn(8, 24, device="cpu"),
+                torch.randn(8, 24, device="cpu"),
+            ]
 
             def run(compiled):
                 module.zero_grad(set_to_none=True)
