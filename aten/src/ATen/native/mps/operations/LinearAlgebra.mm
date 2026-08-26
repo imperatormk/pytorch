@@ -1497,7 +1497,10 @@ static Tensor& linalg_solve_triangular_mps_impl(const Tensor& A,
               "linalg.solve.triangular(); Only float is supported!");
   Tensor A_t, B_t;
   std::tie(B_t, A_t) = _linalg_broadcast_batch_dims(B, A, /*don't check errors*/ nullptr);
-  at::native::resize_output(out, B_t.sizes());
+  if (at::native::resize_output_check(out, B_t.sizes())) {
+    out.resize_(B_t.transpose(-2, -1).sizes(), MemoryFormat::Contiguous);
+    out.transpose_(-2, -1);
+  }
 
   if (A.numel() == 0 || B.numel() == 0 || out.numel() == 0) {
     out.zero_();
@@ -1512,9 +1515,10 @@ static Tensor& linalg_solve_triangular_mps_impl(const Tensor& A,
   if (!B_t.is_contiguous()) {
     B_ = B_t.clone(at::MemoryFormat::Contiguous);
   }
+  Tensor out_ = out.is_contiguous() ? out : at::empty(B_t.sizes(), out.options());
   id<MTLBuffer> aBuffer = getMTLBufferStorage(A_);
   id<MTLBuffer> bBuffer = getMTLBufferStorage(B_);
-  id<MTLBuffer> outBuffer = getMTLBufferStorage(out);
+  id<MTLBuffer> outBuffer = getMTLBufferStorage(out_);
   MPSStream* mpsStream = getCurrentMPSStream();
   id<MTLDevice> device = MPSDevice::getInstance()->device();
 
@@ -1565,7 +1569,7 @@ static Tensor& linalg_solve_triangular_mps_impl(const Tensor& A,
                                         offset:(B_.storage_offset() + bBatchOffset) * bElemSize
                                     descriptor:rightHandSideMatrixDesc] autorelease];
         MPSMatrix* solutionMatrix = [[[MPSMatrix alloc] initWithBuffer:outBuffer
-                                                                offset:(out.storage_offset() + bBatchOffset) * bElemSize
+                                                                offset:(out_.storage_offset() + bBatchOffset) * bElemSize
                                                             descriptor:rightHandSideMatrixDesc] autorelease];
 
         [filter encodeToCommandBuffer:commandBuffer
@@ -1576,6 +1580,9 @@ static Tensor& linalg_solve_triangular_mps_impl(const Tensor& A,
       getMPSProfiler().endProfileKernel(filter);
     }
   });
+  if (!out_.is_same(out)) {
+    out.copy_(out_);
+  }
   return out;
 }
 
