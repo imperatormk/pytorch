@@ -5709,7 +5709,19 @@ def linspace(
     computation_dtype, _ = utils.reduction_dtypes(
         rg, REDUCTION_OUTPUT_TYPE_KIND.SAME, dtype_red
     )
+    if utils.is_integer_dtype(computation_dtype):
+        # `step` is a Python float, so an integer index would promote the
+        # product to the default dtype rather than the one the step was
+        # derived in, and the eager kernels carry it in double.
+        computation_dtype = highest_precision_float(device)
     cast_rg = partial(_maybe_convert_to_dtype, dtype=computation_dtype)
+
+    # The CPU and CUDA kernels both take `start` and `end` in the output dtype
+    # before deriving the step, so an integer linspace over fractional endpoints
+    # steps from the truncated ends.
+    if utils.is_integer_dtype(dtype) and not utils.is_boolean_dtype(dtype):
+        start = _maybe_convert_to_dtype(start, dtype)
+        end = _maybe_convert_to_dtype(end, dtype)
 
     # We implement torch.lerp without performing rg / (steps - 1) explicitly
     # With this we get out[0] == start, out[-1] == end
