@@ -757,6 +757,12 @@ inductor_override_kwargs["xpu"] = {
 }
 
 inductor_override_kwargs["mps"] = {
+    # An integer linspace truncates start + step*i, and Metal has no fp64, so an
+    # index whose exact value is a whole number can land one below it.
+    ("linspace", i32): {"assert_equal": False},
+    ("linspace", i64): {"assert_equal": False},
+    ("linspace.tensor_overload", i32): {"assert_equal": False},
+    ("linspace.tensor_overload", i64): {"assert_equal": False},
     # the return value of empty is undefined
     "empty": {"assert_equal": False},
     "empty_permuted": {"assert_equal": False},
@@ -792,6 +798,12 @@ inductor_override_kwargs["mps"] = {
     ("fmod", f16): {"atol": 2e-3, "rtol": 0.005},
     ("atan2", f16): {"atol": 2e-3, "rtol": 0.005},
     ("log2", f16): {"atol": 2e-3, "rtol": 0.002},
+    ("sinc", f16): {"atol": 0.008, "rtol": 0.002},
+    ("special.bessel_j0", f16): {"atol": 2e-3, "rtol": 0.02},
+    ("special.bessel_j1", f16): {"atol": 2e-3, "rtol": 0.02},
+    ("special.bessel_y0", f16): {"atol": 2e-3, "rtol": 0.02},
+    ("nn.functional.tanhshrink", f16): {"atol": 2e-3, "rtol": 0.02},
+    ("xlogy", f16): {"atol": 2e-3, "rtol": 0.02},
     ("logaddexp", f16): {"atol": 2e-3, "rtol": 0.002},
     ("logsumexp", f16): {"atol": 2e-3, "rtol": 0.005},
     ("combinations", f16): {"atol": 2e-3, "rtol": 0.01},
