@@ -429,6 +429,10 @@ def convolution_backward(
 
 @register_decomposition([aten.round.decimals])
 def round_dec(x: torch.Tensor, decimals: int = 0) -> torch.Tensor:
+    # Rounding an integer is identity at any scale, and the float scaling below
+    # would hand back a float tensor.
+    if utils.is_integer_dtype(x.dtype):
+        return x.clone()
     ten_pow_decimals = 10.0**decimals
     return aten.round(x * ten_pow_decimals) * (1.0 / ten_pow_decimals)
 
