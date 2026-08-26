@@ -33,9 +33,16 @@ struct sub_alpha_functor {
 };
 
 struct lerp_alpha_functor {
-  template <typename T>
-  inline T operator()(const T a, const T b, const T alpha) {
-    return static_cast<T>(a + c10::metal::mul(alpha, b - a));
+  // T2 is the weight's own type: a scalar the input dtype cannot hold exactly
+  // arrives as float, and each of the subtract, multiply and add would round
+  // again if the arithmetic ran in T.
+  template <typename T, typename T2 = T>
+  inline T operator()(const T a, const T b, const T2 alpha) {
+    using op_t = c10::metal::opmath_t<T>;
+    const op_t wide = static_cast<op_t>(a) +
+        static_cast<op_t>(alpha) *
+            (static_cast<op_t>(b) - static_cast<op_t>(a));
+    return static_cast<T>(wide);
   }
 };
 
@@ -717,6 +724,9 @@ REGISTER_BINARY_ALPHA_OP(lerp_alpha, long, long, long);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, int, int, int);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, float, float, float);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, half, half, half);
+// A float weight, so a scalar the input dtype cannot hold exactly reaches the
+// kernel unrounded.
+REGISTER_BINARY_ALPHA_OP(lerp_alpha, half, float, half);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, short, short, short);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, uchar, uchar, uchar);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, char, char, char);
@@ -725,6 +735,7 @@ REGISTER_BINARY_ALPHA_OP(lerp_alpha, bool, bool, bool);
 REGISTER_BINARY_ALPHA_OP(add_alpha, bfloat, bfloat, bfloat);
 REGISTER_BINARY_ALPHA_OP(sub_alpha, bfloat, bfloat, bfloat);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, bfloat, bfloat, bfloat);
+REGISTER_BINARY_ALPHA_OP(lerp_alpha, bfloat, float, bfloat);
 
 // Complex binary functions
 REGISTER_BINARY_OP(polar, float, float2);
@@ -756,6 +767,10 @@ inline T lerp_op(T s, T e, T w) {
 
 inline bfloat lerp_op(bfloat s, bfloat e, bfloat w) {
   return static_cast<bfloat>(fma(float(w), float(e) - float(s), float(s)));
+}
+
+inline half lerp_op(half s, half e, half w) {
+  return static_cast<half>(fma(float(w), float(e) - float(s), float(s)));
 }
 
 inline long lerp_op(long s, long e, long w) {

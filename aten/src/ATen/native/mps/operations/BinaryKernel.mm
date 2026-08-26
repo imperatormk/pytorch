@@ -201,7 +201,11 @@ static void complex_mps_kernel(TensorIterator& iter) {
 }
 
 static void lerp_scalar_mps_kernel(at::TensorIteratorBase& iter, const Scalar& weight) {
-  lib.exec_binary_kernel(iter, "lerp_alpha", weight);
+  // Typed float rather than by the inputs: a weight like 0.4 is not
+  // representable in half, and narrowing it moves every output element.
+  const auto dt = iter.common_dtype();
+  const auto alpha_type = (dt == kHalf || dt == kBFloat16) ? std::optional<ScalarType>(kFloat) : std::nullopt;
+  lib.exec_binary_kernel(iter, "lerp_alpha", weight, alpha_type);
 }
 
 static void lerp_tensor_mps_kernel(at::TensorIteratorBase& iter) {
