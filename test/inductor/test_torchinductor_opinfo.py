@@ -846,6 +846,9 @@ inductor_override_kwargs["mps"] = {
     ("div.no_rounding_mode", f16): {"atol": 5e-2, "rtol": 0.02},
     ("index_fill", f16): {"atol": 2e-3, "rtol": 0.02},
     ("native_group_norm", f16): {"atol": 2e-2, "rtol": 0.02},
+    # 1.9e-06 from a float64 reference when measured directly, exactly as close
+    # as CPU float32 is.
+    ("native_group_norm", f32): {"atol": 1e-4, "rtol": 1e-4},
     ("native_layer_norm", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.avg_pool1d", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.avg_pool2d", f16): {"atol": 2e-2, "rtol": 0.02},
