@@ -374,6 +374,10 @@ def meta_fft_c2c(self, dim, normalization, forward):
 
     out_sizes = self.size()
     output = self.new_empty(out_sizes)
+    # _exec_fft models the permute MKL and cuFFT apply in place. The MPS kernel
+    # writes a plain contiguous result whatever the input layout.
+    if device_hint(self) == "mps":
+        return output
     if device_hint(self) != "cuda":
         sorted_dims = _sort_dims(self, dim)
         return _exec_fft(output, self, out_sizes, sorted_dims, forward=forward)
