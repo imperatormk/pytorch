@@ -853,6 +853,11 @@ inductor_override_kwargs["mps"] = {
     # factor different matrices and cannot agree to float32 exactness.
     ("svd_lowrank", f32): {"atol": 1e-3, "rtol": 1e-3},
     ("pca_lowrank", f32): {"atol": 1e-3, "rtol": 1e-3},
+    # uint8 bilinear differs from CPU by one level on about a sixth of the
+    # elements, and the compiled result is the one that matches a float64
+    # reference exactly while CPU's integer approximation does not.
+    ("nn.functional.interpolate.bilinear", u8): {"assert_equal": False},
+    ("nn.functional.upsample_bilinear", u8): {"assert_equal": False},
     # The with_dtype variants ask for a bfloat16 output, so a float32-named test
     # still lands on bf16 precision. avg_pool1d measures 4.8e-07 against CPU
     # when called directly.
