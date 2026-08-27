@@ -6827,6 +6827,11 @@ def avg_pool2d_backward(
         stride = kernel_size
     if not padding:
         padding = [0, 0]
+    # A scalar argument arrives as a length-1 list, the way the forward handles
+    # it a few hundred lines above.
+    kernel_size = pad_listlike(kernel_size, 2)
+    stride = pad_listlike(stride, 2)
+    padding = pad_listlike(padding, 2)
 
     if not (isinstance(grad_output, TensorBox)):
         raise AssertionError("expected: isinstance(grad_output, TensorBox)")
