@@ -767,6 +767,7 @@ class TestSelectAlgorithmCleanup(TestCase):
         class FakeCompileResult:
             def __init__(self, name):
                 self.kernel = FakeKernel(name)
+                self.config = object()
 
         def fake_launcher():
             return None
@@ -775,6 +776,10 @@ class TestSelectAlgorithmCleanup(TestCase):
         fake_launcher.__self__ = launcher_kernel  # type: ignore[attr-defined]
 
         autotuner = object.__new__(CachingAutotuner)
+        # release_benchmark_artifacts restores configs from the results it is
+        # about to drop, so a hand-built autotuner needs the attribute __init__
+        # would have set.
+        autotuner.configs = None
         autotuner.launchers = [fake_launcher]
         autotuner.compile_results = [FakeCompileResult("compile_result")]
         autotuner.benchmark_failure_reasons = {fake_launcher: "failed"}
