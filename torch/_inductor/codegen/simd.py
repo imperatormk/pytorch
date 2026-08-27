@@ -1989,13 +1989,18 @@ class _GroupedReductionOpsHandler(WrapperHandler):  # type: ignore[type-arg]
         # from the reduced-output family, so emit the derived headers before
         # we materialize the reshape line.
         self._family.ensure_headers(k)
-        reshaped = k.emit_reshape(value, self._layout.reshape_shape, src_dtype)
+        # A reshape carries its operand's dtype. src_dtype is the reduction's
+        # input type, which ensure_parent_tile_resolution above may already have
+        # widened.
+        reshaped = k.emit_reshape(value, self._layout.reshape_shape, value.dtype)
         k.num_reduction += 1
+        # tl.sum and friends return their operand's type, so the result carries
+        # the reshaped value's dtype rather than the reduction's declared one.
         return k.emit_reduce(
             reshaped,
             reduction_type,
             self._layout.reduce_axis,
-            dtype,
+            reshaped.dtype,
             self._layout.output_shape,
         )
 
