@@ -4565,7 +4565,12 @@ def meta_embedding_bag(
 
     if device_hint(offsets) != "cpu":
         offset2bag = indices.new_empty(indices.size(0))
-        bag_size = indices.new_empty(offsets.size())
+        # MPS sizes bag_size by the bag count, as CPU does, rather than by the
+        # offsets. With include_last_offset the two differ by one.
+        if device_hint(offsets) == "mps":
+            bag_size = indices.new_empty(num_bags)
+        else:
+            bag_size = indices.new_empty(offsets.size())
         if mode == MODE_MAX:
             max_indices = indices.new_empty(num_bags, weight.size(1))
         else:
