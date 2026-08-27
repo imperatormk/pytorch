@@ -5892,8 +5892,12 @@ def linear_backward(
     grad_input = grad_output.matmul(weight) if output_mask[0] else None
     grad_weight = None
     if output_mask[1]:
-        go2 = grad_output.reshape(-1, grad_output.size(-1))
-        grad_weight = go2.t().matmul(self.reshape(-1, self.size(-1)))
+        # A zero-sized trailing dim makes `reshape(-1, 0)` ambiguous, so the
+        # leading extent is spelled out.
+        go_lead = reduce(operator.mul, grad_output.shape[:-1], 1)
+        self_lead = reduce(operator.mul, self.shape[:-1], 1)
+        go2 = grad_output.reshape(go_lead, grad_output.size(-1))
+        grad_weight = go2.t().matmul(self.reshape(self_lead, self.size(-1)))
     grad_bias = None
     if output_mask[2]:
         grad_bias = grad_output.reshape(-1, grad_output.size(-1)).sum(0)
