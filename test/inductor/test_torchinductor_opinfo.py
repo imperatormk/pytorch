@@ -808,6 +808,12 @@ inductor_override_kwargs["mps"] = {
     # ref32.to(float16), the closest fp16 is allowed to get: either identical to
     # it, or within an ulp of CPU's own fp16 while CPU sits further from float32
     # than we do. Reductions and matmuls differ only in summation order.
+    ("addmm", f16): {"atol": 5e-2, "rtol": 0.02},
+    ("addr", f16): {"atol": 5e-2, "rtol": 0.02},
+    ("kron", f16): {"atol": 5e-2, "rtol": 0.02},
+    ("logcumsumexp", f16): {"atol": 2e-2, "rtol": 0.05},
+    ("std_mean", f16): {"atol": 1e-2, "rtol": 0.02},
+    ("unfold_copy", f16): {"atol": 2e-3, "rtol": 0.02},
     ("__rdiv__", f16): {"atol": 3e-2, "rtol": 0.02},
     ("__rmod__", f16): {"atol": 5e-3, "rtol": 0.02},
     ("__rmul__", f16): {"atol": 3e-2, "rtol": 0.02},
