@@ -883,6 +883,7 @@ inductor_override_kwargs["mps"] = {
     ("nn.functional.hinge_embedding_loss", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.instance_norm", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.interpolate.nearest", f16): {"atol": 2e-2, "rtol": 0.02},
+    ("nn.functional.interpolate.nearest-exact", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.layer_norm", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.local_response_norm", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.max_pool2d", f16): {"atol": 2e-2, "rtol": 0.02},
