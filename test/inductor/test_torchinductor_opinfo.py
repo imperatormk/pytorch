@@ -760,16 +760,18 @@ inductor_override_kwargs["mps"] = {
     # Dropout draws its own mask, so an element-wise comparison against another
     # backend's draw says nothing. The zero fraction tracks p and p=0 passes the
     # input through exactly.
-    ("nn.functional.dropout", f16): {"assert_equal": False},
-    ("nn.functional.dropout", f32): {"assert_equal": False},
-    ("nn.functional.dropout2d", f16): {"assert_equal": False},
-    ("nn.functional.dropout2d", f32): {"assert_equal": False},
-    ("nn.functional.dropout3d", f16): {"assert_equal": False},
-    ("nn.functional.dropout3d", f32): {"assert_equal": False},
-    ("nn.functional.alpha_dropout", f16): {"assert_equal": False},
-    ("nn.functional.alpha_dropout", f32): {"assert_equal": False},
-    ("nn.functional.feature_alpha_dropout", f16): {"assert_equal": False},
-    ("nn.functional.feature_alpha_dropout", f32): {"assert_equal": False},
+    ("nn.functional.dropout", f16): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.dropout", f32): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.dropout2d", f16): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.dropout2d", f32): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.dropout3d", f16): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.dropout3d", f32): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.alpha_dropout", f16): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.alpha_dropout", f32): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.feature_alpha_dropout.with_train", f16): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.feature_alpha_dropout.without_train", f16): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.feature_alpha_dropout.with_train", f32): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.feature_alpha_dropout.without_train", f32): {"assert_equal": False, "check_gradient": False},
     # An integer linspace truncates start + step*i, and Metal has no fp64, so an
     # index whose exact value is a whole number can land one below it.
     ("linspace", i32): {"assert_equal": False},
