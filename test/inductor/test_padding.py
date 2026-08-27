@@ -976,7 +976,10 @@ class PaddingTest(TestCaseBase):
         with config.patch({"comprehensive_padding": True}):
             compiled = torch.compile(program, backend="inductor")(x.clone())
 
-        self.assertEqual(eager, compiled)
+        # The reduction sums 131136 float32 values, and the two orders land the
+        # same 1.2e-4 from a float64 reference in opposite directions. This test
+        # is about strides, not summation order.
+        self.assertEqual(eager, compiled, atol=5e-4, rtol=1e-5)
 
 
 if __name__ == "__main__":
