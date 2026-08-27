@@ -197,6 +197,23 @@ class MPSBasicTests(TestCase):
             check_gradient=True,
         )
 
+    def test_conv_single_output_element(self):
+        # A 1x1x1x1 output folds the template's store index to a constant,
+        # and the store must keep the template mask or an out-of-range tile
+        # lane wins the write.
+        def fn(x, y, b):
+            return torch.nn.functional.conv2d(x, y, b)
+
+        with inductor_config.patch(max_autotune_conv_backends="TRITON"):
+            self.common(
+                fn,
+                (
+                    torch.rand(1, 1, 3, 3),
+                    torch.rand(1, 1, 3, 3),
+                    torch.rand(1),
+                ),
+            )
+
     def test_cholesky(self):
         def fn(x):
             return (

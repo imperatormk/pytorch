@@ -4162,6 +4162,8 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 )
             else:
                 mask_vars = OrderedSet()
+            if override_mask and mask_constant_index:
+                mask_vars = OrderedSet([override_mask])
             if self._load_mask:
                 mask_vars.add(self._load_mask)
             return IndexingOptions(
@@ -5017,7 +5019,8 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             dense_indexing=True,
             block_ptr=mode is None,
             tma_compatibility_checker=tma_compatibility_checker,
-            mask_constant_index=mode == "atomic_add",
+            mask_constant_index=mode == "atomic_add"
+            or getattr(self, "template_mask", None) is not None,
         )
 
         if isinstance(indexing, IndexingOptions) and self._has_stride1_on_rdim(
