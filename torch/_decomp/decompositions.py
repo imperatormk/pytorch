@@ -2151,7 +2151,7 @@ def native_batch_norm_helper(
         bias = _unsqueeze_to_dim(bias, input.dim() - 1)
         output = output + bias
 
-    if input.device.type == "cpu":
+    if input.device.type in ("cpu", "mps"):
         save_mean = save_mean.to(dtype=input.dtype)
         save_rstd = save_rstd.to(dtype=input.dtype)
     return (
