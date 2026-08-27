@@ -871,7 +871,10 @@ inductor_override_kwargs["mps"] = {
     ("nn.functional.conv_transpose3d", f16): {"atol": 5e-2, "rtol": 0.02},
     ("nn.functional.cosine_embedding_loss", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.cosine_similarity", f16): {"atol": 2e-2, "rtol": 0.02},
-    ("nn.functional.fractional_max_pool2d", f16): {"atol": 2e-2, "rtol": 0.02},
+    # Without _random_samples each device draws its own pooling regions and so
+    # picks different maxima. No tolerance covers a different element.
+    ("nn.functional.fractional_max_pool2d", f16): {"assert_equal": False, "check_gradient": False},
+    ("nn.functional.fractional_max_pool2d", f32): {"assert_equal": False, "check_gradient": False},
     ("nn.functional.hinge_embedding_loss", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.instance_norm", f16): {"atol": 2e-2, "rtol": 0.02},
     ("nn.functional.interpolate.nearest", f16): {"atol": 2e-2, "rtol": 0.02},
