@@ -3723,8 +3723,10 @@ make_fallback(aten._segment_reduce_backward.default)
 # Histogram (need to implement Histogram IR)
 make_fallback(aten.histc)
 make_fallback(aten.histogram.bin_ct)
+make_fallback(aten.histogram.bins_tensor)
 make_fallback(aten._histogramdd_bin_edges.default)
 make_fallback(aten._histogramdd_from_bin_cts.default)
+make_fallback(aten._histogramdd_from_bin_tensors.default)
 
 # Need templated kernel
 make_fallback(aten.addbmm)
@@ -3762,6 +3764,9 @@ make_fallback(aten.upsample_linear1d_backward)
 make_fallback(aten.upsample_bicubic2d_backward, require_contiguous)
 make_fallback(aten.upsample_trilinear3d_backward)
 make_fallback(aten.grid_sampler_2d_backward)
+make_fallback(aten.grid_sampler_3d)
+make_fallback(aten.grid_sampler_3d_backward)
+make_fallback(aten.replication_pad3d_backward)
 make_fallback(aten._pdist_backward, require_contiguous)
 
 
@@ -3811,6 +3816,7 @@ make_fallback(aten.nonzero_static.default)
 # Data-dependent output size; route to ATen eager kernel (CPU/CUDA/XPU all have
 # native implementations)
 make_fallback(aten.bincount.default, warn=False)
+make_fallback(aten._unique.default, warn=False)
 make_fallback(aten._unique2.default, warn=False)
 make_fallback(aten.unique_dim.default, warn=False)
 make_fallback(aten.unique_consecutive.default, warn=False)
