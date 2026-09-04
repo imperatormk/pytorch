@@ -12,6 +12,7 @@
 #include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/mps/OperationUtils.h>
 #include <fmt/format.h>
+#include <torch/library.h>
 
 // #define _CAPTURE_KERNEL 1
 
@@ -213,6 +214,42 @@ Tensor _weight_int8pack_mm_mps(const Tensor& A, const Tensor& B, const Tensor& s
 #endif
 
   return C;
+}
+
+static Tensor qembeddingbag_byte_unpack_mps(const Tensor& packed_weight) {
+  TORCH_CHECK(packed_weight.scalar_type() == kByte, __func__, " : expect packed_weight to be uint8 tensor.");
+  TORCH_CHECK(packed_weight.dim() >= 2, __func__, " : expect packed_weight to be at least 2D.");
+  const auto sizes = packed_weight.sizes();
+  const auto colDim = sizes.size() - 1;
+  const int64_t inCols = sizes[colDim];
+  const int64_t outCols = inCols - 2 * static_cast<int64_t>(sizeof(float));
+  TORCH_CHECK(outCols > 0, __func__, " : expect the last dimension to exceed the 8 scale and zero point bytes.");
+  const int64_t rows = c10::size_to_dim_(colDim, sizes);
+
+  auto contig = packed_weight.expect_contiguous();
+  std::vector<int64_t> outShape = sizes.vec();
+  outShape[colDim] = outCols;
+  Tensor out = at::empty(outShape, packed_weight.options().dtype(kFloat));
+  if (rows == 0) {
+    return out;
+  }
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+  std::array<uint32_t, 2> dims = {static_cast<uint32_t>(outCols), static_cast<uint32_t>(inCols)};
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      id<MTLComputePipelineState> pso = lib.getPipelineStateForFunc("embedding_bag_byte_unpack");
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder, *contig, out, dims);
+      mtl_dispatch2DJob(computeEncoder, pso, outCols, rows);
+    }
+  });
+  return out;
+}
+
+TORCH_LIBRARY_IMPL(quantized, MPS, m) {
+  m.impl(TORCH_SELECTIVE_NAME("quantized::embedding_bag_byte_unpack"), qembeddingbag_byte_unpack_mps);
 }
 
 } // namespace at::native

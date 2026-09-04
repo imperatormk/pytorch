@@ -641,3 +641,28 @@ kernel void kernel_mul_mv<DTYPE>(                                               
 INSTANTIATE_MV(float);
 INSTANTIATE_MV(half);
 INSTANTIATE_MV(bfloat);
+
+// Each row's last 8 bytes are an fp32 scale and zero point, unaligned against
+// the row start, so they are read byte by byte.
+kernel void embedding_bag_byte_unpack(
+    constant uchar * packed     [[buffer(0)]],
+    device   float * out        [[buffer(1)]],
+    constant uint2 & sizes      [[buffer(2)]],
+    uint2            tid        [[thread_position_in_grid]]) {
+  const uint outCols = sizes.x;
+  const uint inCols = sizes.y;
+  const uint col = tid.x;
+  if (col >= outCols) {
+    return;
+  }
+  constant uchar *row = packed + tid.y * inCols;
+  float scale = 0.0f;
+  float zeroPoint = 0.0f;
+  thread uchar *s = reinterpret_cast<thread uchar *>(&scale);
+  thread uchar *z = reinterpret_cast<thread uchar *>(&zeroPoint);
+  for (uint b = 0; b < 4; ++b) {
+    s[b] = row[outCols + b];
+    z[b] = row[outCols + 4 + b];
+  }
+  out[tid.y * outCols + col] = float(row[col]) * scale + zeroPoint;
+}

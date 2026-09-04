@@ -2761,7 +2761,7 @@ class CommonTemplate:
         self.assertEqual(expect, actual)
 
     def test_embedding_bag_byte_unpack(self):
-        if self.device != "cpu":
+        if self.device not in ("cpu", "mps"):
             raise unittest.SkipTest(f"No {GPU_TYPE} implementation (it returns empty)")
 
         def fn(a):
