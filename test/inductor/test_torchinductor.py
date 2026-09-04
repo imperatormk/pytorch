@@ -2633,7 +2633,7 @@ class CommonTemplate:
         {"dynamic_shapes": False, "assume_static_by_default": True}
     )
     def test_custom_scan_op(self):
-        if self.device != "cuda" and self.device != "xpu":
+        if self.device not in ("cuda", "xpu", "mps"):
             raise unittest.SkipTest("associative_scan only supported on GPU")
 
         def sum_combine(a, b):
@@ -2662,7 +2662,7 @@ class CommonTemplate:
         {"dynamic_shapes": False, "assume_static_by_default": True}
     )
     def test_custom_scan_op_compiled(self):
-        if self.device != "cuda" and self.device != "xpu":
+        if self.device not in ("cuda", "xpu", "mps"):
             raise unittest.SkipTest("associative_scan only supported on GPU")
 
         from torch._higher_order_ops.associative_scan import associative_scan
@@ -2697,7 +2697,7 @@ class CommonTemplate:
         {"dynamic_shapes": False, "assume_static_by_default": True}
     )
     def test_custom_scan_op_multi_input(self):
-        if self.device != "cuda" and self.device != "xpu":
+        if self.device not in ("cuda", "xpu", "mps"):
             raise unittest.SkipTest("associative_scan only supported on GPU")
 
         def argmax_combine(a, b):
@@ -2724,7 +2724,7 @@ class CommonTemplate:
         {"dynamic_shapes": False, "assume_static_by_default": True}
     )
     def test_custom_scan_would_split(self):
-        if self.device != "cuda" and self.device != "xpu":
+        if self.device not in ("cuda", "xpu"):
             raise unittest.SkipTest("associative_scan only supported on GPU")
 
         def combine_linear_recurrence(left, right):
@@ -3203,7 +3203,7 @@ class CommonTemplate:
 
     @skip_if_gpu_halide
     def test_cumprod_backward_split_scan_reduction_fusion(self):
-        if self.device not in ("cuda", "xpu"):
+        if self.device not in ("cuda", "xpu", "mps"):
             raise unittest.SkipTest("split scan only supported on GPU")
 
         seq_len = 8193
@@ -3340,10 +3340,6 @@ class CommonTemplate:
         self.common(fn, (torch.randint(4, (4,)),))
 
     def test_comparison_scalar_type_promotion_bf16(self):
-        if self.device == "mps":
-            raise unittest.SkipTest(
-                "MPS codegen doesn't upcast bf16 constants to float32"
-            )
 
         def fn(x):
             return x == 3.14
@@ -4218,8 +4214,10 @@ for dtype in (torch.int32, torch.int64):
 
     @parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
     def test_div_floor_float_nonfinite(self, dtype):
-        if self.device not in ("cpu", "cuda"):
+        if self.device not in ("cpu", "cuda", "mps"):
             raise unittest.SkipTest("Only validated on CPU/CUDA")
+        if self.device == "mps" and dtype == torch.float64:
+            raise unittest.SkipTest("MPS has no float64")
 
         def fn(a, b):
             return torch.div(a, b, rounding_mode="floor")
@@ -13227,7 +13225,10 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     @config.patch(search_autotune_cache=False)
     def test_dropout3(self):
         if is_mps_backend(self.device):
-            raise unittest.SkipTest("MPS Inductor does not lower aten.linear_backward")
+            # linear_backward lowers and the result is correct; the assertion
+            # is a generated-kernel count written for CUDA's fusion. MPS emits
+            # 23 where the test expects 4.
+            raise unittest.SkipTest("kernel-count assertion is CUDA-specific")
 
         m = torch.nn.Sequential(
             torch.nn.Linear(32, 32, bias=False),
