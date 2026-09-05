@@ -834,16 +834,13 @@ class InductorBenchmarker(TritonBenchmarker):  # noqa: docstring_linter
         # loop overrun it by an order of magnitude.
         #
         # Cheap kernels also need a minimum sample count for the reported
-        # minimum to be stable. An expensive kernel gets the samples that fit in
-        # benchmark_floor_ms instead: the first launch after a flush is cold,
-        # so a single sample is never a fair minimum, while 50 samples of a
-        # 185ms addmm would cost ten seconds per candidate.
+        # minimum to be stable, but that floor only applies while the kernel is
+        # cheap. Raising it for an expensive kernel is how a 185ms addmm ends up
+        # timed 50 times, so the floor is itself capped by the budget.
         per_iter = max(estimated_timing, estimation_wall / max(estimation_iters, 1))
         if per_iter > 0:
             budgeted = int(max_benchmark_duration // per_iter)
-            floor = 50 if per_iter <= max_benchmark_duration else max(
-                1, min(50, int(inductor_config.benchmark_floor_ms // per_iter))
-            )
+            floor = 50 if per_iter <= max_benchmark_duration else 1
             benchmark_iters = max(min(benchmark_iters, budgeted), min(benchmark_iters, floor), 1)
 
         # do the memory warmup
