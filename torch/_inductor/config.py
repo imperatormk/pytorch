@@ -1016,6 +1016,14 @@ benchmark_epilogue_fusion = (
 # Take how many of the top triton kernels to benchmark epilogue
 max_epilogue_benchmarked_choices = 1
 
+# The experimental benchmarker's 25 ms budget yields one sample for any
+# kernel longer than that, and that one sample runs cold, right after the
+# cache flush. A kernel measured that way against a 50-sample min of its
+# unfused half made the epilogue fusion verdict for an 18 ms GEMM flip
+# between identical layers of one model. Expensive kernels instead get as
+# many samples as fit in this many milliseconds, at least one.
+benchmark_floor_ms = int(os.environ.get("TORCHINDUCTOR_BENCHMARK_FLOOR_MS", "600"))
+
 # how many nodes to allow into a single fusion
 max_fusion_size = 64
 
