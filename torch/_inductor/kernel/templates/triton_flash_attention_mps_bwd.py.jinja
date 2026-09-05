@@ -77,7 +77,14 @@
             valid = m_mask[:, None] & n_mask[None, :]
             if IS_CAUSAL:
                 valid = valid & (offs_m[:, None] >= offs_n[None, :])
-            p = tl.where(valid, tl.exp(qk - lse[:, None]), 0.0)
+            # exp2 of the log2-scaled difference: a hardware instruction where
+            # exp is a library call. `ds` below still scales by the true
+            # SM_SCALE, which is the chain rule factor and not a unit change.
+            p = tl.where(
+                valid,
+                tl.exp2((qk - lse[:, None]) * 1.4426950408889634),
+                0.0,
+            )
 
             dp = tl.dot(do, tl.trans(v))
             ds = tl.where(valid, p * (dp - delta[:, None]) * SM_SCALE, 0.0)
@@ -127,7 +134,14 @@
             valid = m_mask[:, None] & n_mask[None, :]
             if IS_CAUSAL:
                 valid = valid & (offs_m[:, None] >= offs_n_out[None, :])
-            p = tl.where(valid, tl.exp(qk - lse[:, None]), 0.0)
+            # exp2 of the log2-scaled difference: a hardware instruction where
+            # exp is a library call. `ds` below still scales by the true
+            # SM_SCALE, which is the chain rule factor and not a unit change.
+            p = tl.where(
+                valid,
+                tl.exp2((qk - lse[:, None]) * 1.4426950408889634),
+                0.0,
+            )
 
             dv += tl.dot(tl.trans(p.to(do.dtype)), do)
             dp = tl.dot(do, tl.trans(v))

@@ -49,6 +49,11 @@
                 mask=(offs_m[:, None] < Q_LEN) & (offs_n[None, :] < KV_LEN),
                 other=0.0,
             ).to(tl.float32)
+        # Log2 units for the softmax below, after the additive mask has been
+        # applied in score units. See the forward template; `lse` converts back
+        # to natural log before it is stored, since that is what the backward
+        # reads.
+        qk = qk * 1.4426950408889634
         if IS_CAUSAL:
             qk = tl.where(offs_m[:, None] >= offs_n[None, :], qk,
                           float("-inf"))
@@ -59,8 +64,8 @@
         # -inf, and -inf - -inf is nan, which would poison the accumulator for
         # the rest of the loop.
         m_safe = tl.where(m_new == float("-inf"), 0.0, m_new)
-        alpha = tl.exp(m_i - m_safe)
-        p = tl.exp(qk - m_safe[:, None])
+        alpha = tl.exp2(m_i - m_safe)
+        p = tl.exp2(qk - m_safe[:, None])
 
         v = tl.load(vb + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk,
                     mask=(offs_n[:, None] < KV_LEN) & d_mask[None, :], other=0.0)
@@ -74,7 +79,10 @@
     # The backward reconstructs the softmax from this instead of reading back an
     # S x S score matrix, so it is the whole reason for this template variant.
     stride_lz, stride_lh, stride_lm = {{stride("LSE")}}
-    lse = tl.where(l_i == 0.0, float("-inf"), m_i + tl.log(l_i))
+    # m_i and l_i are in log2 units, so the log-sum-exp is base 2; the stored
+    # value is the natural log the backward expects.
+    lse = tl.where(l_i == 0.0, float("-inf"),
+                   (m_i + tl.log2(l_i)) * 0.6931471805599453)
     tl.store(
         LSE + off_z * stride_lz + off_h * stride_lh + offs_m * stride_lm,
         lse,

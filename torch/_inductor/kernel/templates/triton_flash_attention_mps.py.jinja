@@ -48,6 +48,12 @@
                 mask=(offs_m[:, None] < Q_LEN) & (offs_n[None, :] < KV_LEN),
                 other=0.0,
             ).to(tl.float32)
+        # Scores move to log2 units here, after the additive mask has been
+        # applied in score units, so the softmax below can use exp2. exp2 is a
+        # hardware instruction where exp is a library call, and the conversion
+        # rides an existing multiply. Only m_i, m_new and m_safe carry these
+        # units; alpha and l_i are ratios and sums, so they are unchanged.
+        qk = qk * 1.4426950408889634
         if IS_CAUSAL:
             qk = tl.where(offs_m[:, None] >= offs_n[None, :], qk,
                           float("-inf"))
@@ -58,8 +64,8 @@
         # -inf, and -inf - -inf is nan, which would poison the accumulator for
         # the rest of the loop.
         m_safe = tl.where(m_new == float("-inf"), 0.0, m_new)
-        alpha = tl.exp(m_i - m_safe)
-        p = tl.exp(qk - m_safe[:, None])
+        alpha = tl.exp2(m_i - m_safe)
+        p = tl.exp2(qk - m_safe[:, None])
 
         v = tl.load(vb + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vk,
                     mask=offs_n[:, None] < KV_LEN, other=0.0)
