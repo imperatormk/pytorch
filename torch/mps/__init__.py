@@ -137,6 +137,58 @@ def recommended_max_memory() -> int:
     return torch._C._mps_recommendedMaxMemory()
 
 
+class _MpsDeviceProperties:
+    r"""The properties of the MPS device.
+
+    Only the fields Metal actually reports are present. Code shared with CUDA
+    commonly reads `total_memory`, `name` and `multi_processor_count`; the rest
+    of the CUDA property surface has no Metal equivalent and is left out rather
+    than filled with invented values.
+    """
+
+    def __init__(self) -> None:
+        self.name: str = torch._C._mps_get_name()
+        # Metal reports a recommended working set rather than a physical total.
+        # It is the number a caller sizing an allocation wants.
+        self.total_memory: int = torch._C._mps_recommendedMaxMemory()
+        self.multi_processor_count: int = torch._C._mps_get_core_count()
+
+    def __repr__(self) -> str:
+        return (
+            f"_MpsDeviceProperties(name='{self.name}', "
+            f"total_memory={self.total_memory}, "
+            f"multi_processor_count={self.multi_processor_count})"
+        )
+
+
+def get_device_properties(
+    device: int | str | torch.device | None = None,
+) -> _MpsDeviceProperties:
+    r"""Get the properties of the MPS device.
+
+    Args:
+        device (torch.device or int or str, optional): ignored, as there is only
+            ever one MPS device. Accepted so that code written against
+            :func:`torch.cuda.get_device_properties` works unchanged.
+
+    Returns:
+        _MpsDeviceProperties: the properties of the device
+    """
+    if not is_available():
+        raise RuntimeError("MPS is not available")
+    return _MpsDeviceProperties()
+
+
+def get_device_name(device: int | str | torch.device | None = None) -> str:
+    r"""Get the name of the MPS device.
+
+    Args:
+        device (torch.device or int or str, optional): ignored; there is only
+            one MPS device.
+    """
+    return get_device_properties(device).name
+
+
 def compile_shader(source: str):
     r"""Compiles compute shader from source and allows one to invoke kernels
     defined there from the comfort of Python runtime
@@ -286,6 +338,8 @@ __all__ = [
     "Event",
     "profiler",
     "recommended_max_memory",
+    "get_device_properties",
+    "get_device_name",
     "is_available",
     "current_device",
     "device",
