@@ -1062,12 +1062,14 @@
   dispatch:
     CUDA: _baddbmm_dtype_cuda
     XPU: _baddbmm_dtype_xpu
+    MPS: _baddbmm_dtype_mps
 
 - func: baddbmm.dtype_out(Tensor self, Tensor batch1, Tensor batch2, ScalarType out_dtype, *, Scalar beta=1, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)
   variants: function
   dispatch:
     CUDA: _baddbmm_out_dtype_cuda
     XPU: _baddbmm_out_dtype_xpu
+    MPS: _baddbmm_out_dtype_mps
 
 - func: bartlett_window(int window_length, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool? pin_memory=None) -> Tensor
   dispatch:
@@ -7095,11 +7097,13 @@
   dispatch:
     CUDA: _addmm_dtype_cuda
     XPU: _addmm_dtype_xpu
+    MPS: _addmm_dtype_mps
 
 - func: addmm.dtype_out(Tensor self, Tensor mat1, Tensor mat2, ScalarType out_dtype, *, Scalar beta=1, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)
   dispatch:
     CUDA: _addmm_dtype_out_cuda
     XPU: _addmm_dtype_out_xpu
+    MPS: _addmm_dtype_out_mps
 
 - func: addmm_(Tensor(a!) self, Tensor mat1, Tensor mat2, *, Scalar beta=1, Scalar alpha=1) -> Tensor(a!)
   structured_delegate: addmm.out
@@ -7117,6 +7121,7 @@
     CPU: addmm_activation_out_cpu
     CUDA: addmm_activation_out_cuda
     XPU: addmm_activation_out_xpu
+    MPS: addmm_activation_out_mps
 
 - func: _addmm_activation(Tensor self, Tensor mat1, Tensor mat2, *, Scalar beta=1, Scalar alpha=1, bool use_gelu=False) -> Tensor
   structured_delegate: _addmm_activation.out

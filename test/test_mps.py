@@ -11999,6 +11999,125 @@ class TestLinalgMPS(TestCaseMPS):
         m2 = maybe_transpose(t3, torch.randn(50, 25, device=device).to(dtype))
         self._test_addmm_addmv(torch.addmm, M, m1, m2, transpose_out=t4)
 
+    @dtypes(torch.bfloat16, torch.float16)
+    def test_addmm_dtype(self, device, dtype):
+        for M, K, N in [(64, 256, 48), (1, 256, 48), (257, 1024, 129)]:
+            a = torch.randn(M, K, device=device).to(dtype)
+            b = torch.randn(K, N, device=device).to(dtype)
+            bias32 = torch.randn(M, N, device=device)
+            a32, b32 = a.cpu().float(), b.cpu().float()
+
+            ref = torch.addmm(bias32.cpu(), a32, b32, beta=0.8, alpha=1.2)
+            out = torch.addmm(bias32, a, b, out_dtype=torch.float32, beta=0.8, alpha=1.2)
+            self.assertEqual(out.dtype, torch.float32)
+            self.assertEqual(out.cpu(), ref, atol=1e-3, rtol=1e-4)
+
+            bias16 = bias32.to(dtype)
+            ref = torch.addmm(bias16.cpu().float(), a32, b32, beta=0.8, alpha=1.2)
+            out = torch.addmm(bias16, a, b, out_dtype=torch.float32, beta=0.8, alpha=1.2)
+            self.assertEqual(out.dtype, torch.float32)
+            self.assertEqual(out.cpu(), ref, atol=1e-3, rtol=1e-4)
+
+            acc = bias32.clone()
+            ret = torch.addmm(acc, a, b, out_dtype=torch.float32, out=acc)
+            self.assertIs(ret, acc)
+            self.assertEqual(acc.cpu(), torch.addmm(bias32.cpu(), a32, b32), atol=1e-3, rtol=1e-4)
+
+            out = torch.addmm(bias16, a, b, out_dtype=dtype, beta=0.8, alpha=1.2)
+            self.assertEqual(out.dtype, dtype)
+            self.assertEqual(out, torch.addmm(bias16, a, b, beta=0.8, alpha=1.2))
+
+    def test_addmm_dtype_fp32_accumulation(self, device):
+        torch.manual_seed(0)
+        V, H, C, n_chunks = 512, 256, 64, 64
+        gw32 = torch.zeros(V, H, device=device)
+        gw16 = torch.zeros(V, H, device=device, dtype=torch.bfloat16)
+        ref = torch.zeros(V, H, dtype=torch.float64)
+        for _ in range(n_chunks):
+            g = torch.randn(V, C, device=device).to(torch.bfloat16)
+            x = torch.randn(C, H, device=device).to(torch.bfloat16)
+            torch.addmm(gw32, g, x, out_dtype=torch.float32, out=gw32)
+            gw16.addmm_(g, x)
+            ref += g.cpu().double() @ x.cpu().double()
+        err32 = (gw32.cpu().double() - ref).abs().max().item()
+        err16 = (gw16.cpu().double() - ref).abs().max().item()
+        self.assertEqual(gw32.cpu(), ref.float(), atol=5e-3, rtol=1e-5)
+        self.assertLess(err32 * 10, err16)
+
+    def test_addmm_dtype_errors(self, device):
+        a = torch.randn(4, 8, device=device, dtype=torch.bfloat16)
+        b = torch.randn(8, 3, device=device, dtype=torch.bfloat16)
+        c = torch.randn(4, 3, device=device)
+        with self.assertRaisesRegex(RuntimeError, "out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs"):
+            torch.addmm(c.half(), a, b, out_dtype=torch.float16)
+        with self.assertRaisesRegex(RuntimeError, "mat1 and mat2 must have the same dtype"):
+            torch.addmm(c, a, b.half(), out_dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "mat1 must be a matrix, got 1-D tensor"):
+            torch.addmm(c, a.flatten(), b, out_dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "mat2 must be a matrix, got 3-D tensor"):
+            torch.addmm(c, a, b.unsqueeze(0), out_dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, r"mat1 and mat2 shapes cannot be multiplied \(4x8 and 3x8\)"):
+            torch.addmm(c, a, b.t(), out_dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "out_dtype must be the same as the dtype of the provided out tensor"):
+            torch.addmm(c, a, b, out_dtype=torch.float32, out=torch.empty(4, 3, device=device, dtype=torch.bfloat16))
+        with self.assertRaisesRegex(RuntimeError, "self dtype must match either out_dtype or mat1 dtype"):
+            torch.addmm(c.half(), a, b, out_dtype=torch.float32)
+
+    @dtypes(torch.bfloat16, torch.float16)
+    def test_baddbmm_dtype(self, device, dtype):
+        a = torch.randn(3, 16, 64, device=device).to(dtype)
+        b = torch.randn(3, 64, 24, device=device).to(dtype)
+        c = torch.randn(3, 16, 24, device=device)
+        a32, b32 = a.cpu().float(), b.cpu().float()
+
+        ref = torch.baddbmm(c.cpu(), a32, b32, beta=0.8, alpha=1.2)
+        out = torch.baddbmm(c, a, b, out_dtype=torch.float32, beta=0.8, alpha=1.2)
+        self.assertEqual(out.dtype, torch.float32)
+        self.assertEqual(out.cpu(), ref, atol=1e-3, rtol=1e-4)
+
+        c16 = torch.randn(1, 16, 24, device=device).to(dtype)
+        ref = torch.baddbmm(c16.cpu().float().expand(3, 16, 24), a32, b32)
+        out = torch.baddbmm(c16, a, b, out_dtype=torch.float32)
+        self.assertEqual(out.cpu(), ref, atol=1e-3, rtol=1e-4)
+
+        acc = c.clone()
+        ret = torch.baddbmm(acc, a, b, out_dtype=torch.float32, out=acc)
+        self.assertIs(ret, acc)
+        self.assertEqual(acc.cpu(), torch.baddbmm(c.cpu(), a32, b32), atol=1e-3, rtol=1e-4)
+
+        out = torch.baddbmm(c.to(dtype), a, b, out_dtype=dtype)
+        self.assertEqual(out.dtype, dtype)
+        self.assertEqual(out, torch.baddbmm(c.to(dtype), a, b))
+
+        other_dtype = torch.float16 if dtype == torch.bfloat16 else torch.bfloat16
+        with self.assertRaisesRegex(RuntimeError, "batch1 and batch2 must have the same dtype"):
+            torch.baddbmm(c, a, b.float(), out_dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs"):
+            torch.baddbmm(c.to(other_dtype), a, b, out_dtype=other_dtype)
+        with self.assertRaisesRegex(RuntimeError, "Expected size for first two dimensions of batch2 tensor"):
+            torch.baddbmm(c, a, b.transpose(1, 2), out_dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "self dtype must match either out_dtype or batch1 dtype"):
+            torch.baddbmm(c.to(other_dtype), a, b, out_dtype=torch.float32)
+
+    @dtypes(torch.float32, torch.float16, torch.bfloat16)
+    @parametrize("use_gelu", [False, True])
+    def test_addmm_activation(self, device, dtype, use_gelu):
+        M = torch.randn(10, 25, device=device).to(dtype)
+        m1 = torch.randn(10, 50, device=device).to(dtype)
+        m2 = torch.randn(50, 25, device=device).to(dtype)
+        act = F.gelu if use_gelu else F.relu
+
+        out = torch._addmm_activation(M, m1, m2, beta=0.8, alpha=1.2, use_gelu=use_gelu)
+        self.assertEqual(out, act(torch.addmm(M, m1, m2, beta=0.8, alpha=1.2)))
+
+        ref = act(torch.addmm(M.cpu().float(), m1.cpu().float(), m2.cpu().float(), beta=0.8, alpha=1.2))
+        tol = 1e-4 if dtype == torch.float32 else 5e-2
+        self.assertEqual(out.cpu().float(), ref, atol=tol, rtol=tol)
+
+        out2 = torch.empty_like(out)
+        torch._addmm_activation(M, m1, m2, beta=0.8, alpha=1.2, use_gelu=use_gelu, out=out2)
+        self.assertEqual(out2, out)
+
     def _test_addr(self, f, t, m, v, alpha=None, beta=None):
         dtype = t.dtype
         numpy_dtype = dtype

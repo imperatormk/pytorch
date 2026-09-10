@@ -21,6 +21,7 @@
 #include <ATen/NativeFunctions.h>
 #else
 #include <ATen/ScalarOps.h>
+#include <ATen/ops/_addmm_activation_native.h>
 #include <ATen/ops/_cholesky_solve_helper_native.h>
 #include <ATen/ops/_int_mm_native.h>
 #include <ATen/ops/_linalg_check_errors.h>
@@ -34,6 +35,7 @@
 #include <ATen/ops/bmm_native.h>
 #include <ATen/ops/eye.h>
 #include <ATen/ops/eye_native.h>
+#include <ATen/ops/gelu.h>
 #include <ATen/ops/linalg_cholesky_ex_native.h>
 #include <ATen/ops/linalg_inv_ex_native.h>
 #include <ATen/ops/linalg_lstsq_native.h>
@@ -52,6 +54,7 @@
 #include <ATen/ops/mul.h>
 #include <ATen/ops/orgqr_native.h>
 #include <ATen/ops/real.h>
+#include <ATen/ops/relu.h>
 #include <ATen/ops/slice.h>
 #include <ATen/ops/stack.h>
 #include <ATen/ops/triangular_solve_native.h>
@@ -339,7 +342,9 @@ Tensor& do_metal_addmm(const Tensor& self,
                        const Scalar& alpha,
                        const Scalar& beta,
                        const Tensor& bias) {
-  if (beta.isFloatingPoint() && alpha.isFloatingPoint() && beta.toDouble() == 0 && alpha.toDouble() == 1) {
+  const bool widens = self.scalar_type() != output.scalar_type();
+  if (!widens && beta.isFloatingPoint() && alpha.isFloatingPoint() && beta.toDouble() == 0 &&
+      alpha.toDouble() == 1) {
     return do_metal_mm(self, other, output);
   }
   // Handle conjugated inputs by creating resolved copies
@@ -349,7 +354,10 @@ Tensor& do_metal_addmm(const Tensor& self,
 
   auto stream = getCurrentMPSStream();
   auto device = MPSDevice::getInstance()->device();
-  auto matmulPSO = lib.getPipelineStateForFunc("addmm_" + mps::scalarToMetalTypeString(output));
+  auto matmulPSO = lib.getPipelineStateForFunc(
+      widens ? "addmm_dtype_" + mps::scalarToMetalTypeString(self_) + "_" +
+                   mps::scalarToMetalTypeString(output)
+             : "addmm_" + mps::scalarToMetalTypeString(output));
   dispatch_sync_with_rethrow(stream->queue(), ^() {
     @autoreleasepool {
       getMPSProfiler().beginProfileKernel(matmulPSO, "addmm", {self_, other_});
@@ -1245,6 +1253,15 @@ static Tensor& addmm_out_mps_impl(const Tensor& bias,
   }
 
   return output;
+}
+
+static Tensor& do_metal_addmm_dtype(const Tensor& mat1,
+                                    const Tensor& mat2,
+                                    Tensor& out,
+                                    const Scalar& alpha,
+                                    const Scalar& beta,
+                                    const Tensor& bias) {
+  return do_metal_addmm(mat1, mat2, out, alpha, beta, bias);
 }
 
 static Tensor& tiled_bmm_out_mps_impl(const Tensor& batch1, const Tensor& batch2, Tensor& result) {
@@ -2303,6 +2320,84 @@ TORCH_IMPL_FUNC(addmm_out_mps)
   mps::addmm_out_mps_impl(self, mat1, mat2, beta, alpha, const_cast<Tensor&>(result));
 }
 
+Tensor& _addmm_dtype_out_mps(const Tensor& self,
+                             const Tensor& mat1,
+                             const Tensor& mat2,
+                             const at::ScalarType out_dtype,
+                             const Scalar& beta,
+                             const Scalar& alpha,
+                             Tensor& out) {
+  TORCH_CHECK(mat1.dim() == 2, "mat1 must be a matrix, got ", mat1.dim(), "-D tensor");
+  TORCH_CHECK(mat2.dim() == 2, "mat2 must be a matrix, got ", mat2.dim(), "-D tensor");
+  TORCH_CHECK(mat1.sizes()[1] == mat2.sizes()[0],
+              "mat1 and mat2 shapes cannot be multiplied (",
+              mat1.sizes()[0],
+              "x",
+              mat1.sizes()[1],
+              " and ",
+              mat2.sizes()[0],
+              "x",
+              mat2.sizes()[1],
+              ")");
+  TORCH_CHECK(mat1.scalar_type() == mat2.scalar_type(),
+              "mat1 and mat2 must have the same dtype, but got ",
+              mat1.scalar_type(),
+              " and ",
+              mat2.scalar_type());
+  TORCH_CHECK(out_dtype == mat1.scalar_type() ||
+                  (out_dtype == at::ScalarType::Float &&
+                   (mat1.scalar_type() == at::ScalarType::Half || mat1.scalar_type() == at::ScalarType::BFloat16)),
+              "out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs");
+  TORCH_CHECK(out_dtype == out.scalar_type(), "out_dtype must be the same as the dtype of the provided out tensor");
+  TORCH_CHECK(out_dtype == self.scalar_type() || self.scalar_type() == mat1.scalar_type(),
+              "self dtype must match either out_dtype or mat1 dtype");
+
+  if (out_dtype == mat1.scalar_type()) {
+    return mps::addmm_out_mps_impl(self, mat1, mat2, beta, alpha, out);
+  }
+
+  const Tensor bias = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
+  // The metal kernel accumulates in opmath_t, so it reads the narrow operands
+  // and stores fp32 directly. MPSGraph emits its operand dtype, so the graph
+  // path needs the operands widened first.
+  if (out_dtype == at::ScalarType::Float &&
+      (mat1.scalar_type() == at::ScalarType::Half || mat1.scalar_type() == at::ScalarType::BFloat16)) {
+    auto mat1_ = mat1.is_conj() ? mat1.resolve_conj() : mat1;
+    auto mat2_ = mat2.is_conj() ? mat2.resolve_conj() : mat2;
+    return mps::do_metal_addmm_dtype(mat1_, mat2_, out, alpha, beta, bias.expand({mat1.size(0), mat2.size(1)}));
+  }
+  return mps::addmm_out_mps_impl(bias, mat1.to(out_dtype), mat2.to(out_dtype), beta, alpha, out);
+}
+
+Tensor _addmm_dtype_mps(const Tensor& self,
+                        const Tensor& mat1,
+                        const Tensor& mat2,
+                        const at::ScalarType out_dtype,
+                        const Scalar& beta,
+                        const Scalar& alpha) {
+  TORCH_CHECK(mat1.dim() == 2, "mat1 must be a matrix, got ", mat1.dim(), "-D tensor");
+  TORCH_CHECK(mat2.dim() == 2, "mat2 must be a matrix, got ", mat2.dim(), "-D tensor");
+  Tensor result = at::empty({mat1.size(0), mat2.size(1)}, self.options().dtype(out_dtype));
+  return _addmm_dtype_out_mps(self, mat1, mat2, out_dtype, beta, alpha, result);
+}
+
+TORCH_IMPL_FUNC(addmm_activation_out_mps)
+(const Tensor& self,
+ const Tensor& mat1,
+ const Tensor& mat2,
+ const Scalar& beta,
+ const Scalar& alpha,
+ bool use_gelu,
+ const Tensor& result) {
+  auto& out = const_cast<Tensor&>(result);
+  mps::addmm_out_mps_impl(self, mat1, mat2, beta, alpha, out);
+  if (use_gelu) {
+    at::gelu_(out);
+  } else {
+    at::relu_(out);
+  }
+}
+
 TORCH_IMPL_FUNC(bmm_out_mps)(const Tensor& batch1, const Tensor& batch2, const Tensor& result) {
   mps::bmm_out_mps_impl(batch1, batch2, const_cast<Tensor&>(result));
 }
@@ -2374,6 +2469,59 @@ TORCH_IMPL_FUNC(baddbmm_out_mps)
  const Tensor& result) {
   mps::addbmm_or_baddbmm_out_mps_impl(
       self, batch1, batch2, beta, alpha, const_cast<Tensor&>(result), mps::BADDBMM_OP_TYPE);
+}
+
+Tensor& _baddbmm_out_dtype_mps(const Tensor& self,
+                               const Tensor& batch1,
+                               const Tensor& batch2,
+                               const at::ScalarType out_dtype,
+                               const Scalar& beta,
+                               const Scalar& alpha,
+                               Tensor& out) {
+  TORCH_CHECK(batch1.dim() == 3, "batch1 must be a 3D tensor");
+  TORCH_CHECK(batch2.dim() == 3, "batch2 must be a 3D tensor");
+  const int64_t bs = batch1.size(0);
+  const int64_t res_rows = batch1.size(1);
+  const int64_t contraction_size = batch1.size(2);
+  const int64_t res_cols = batch2.size(2);
+  TORCH_CHECK(batch2.size(0) == bs && batch2.size(1) == contraction_size,
+              "Expected size for first two dimensions of batch2 tensor to be: [",
+              bs,
+              ", ",
+              contraction_size,
+              "] but got: [",
+              batch2.size(0),
+              ", ",
+              batch2.size(1),
+              "].");
+  TORCH_CHECK(batch1.scalar_type() == batch2.scalar_type(), "batch1 and batch2 must have the same dtype");
+  TORCH_CHECK(out_dtype == batch1.scalar_type() ||
+                  (out_dtype == at::ScalarType::Float &&
+                   (batch1.scalar_type() == at::ScalarType::Half || batch1.scalar_type() == at::ScalarType::BFloat16)),
+              "out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs");
+  TORCH_CHECK(out_dtype == out.scalar_type(), "out_dtype must match the out tensor dtype");
+  TORCH_CHECK(out.dim() == 3, "self must be a 3D tensor");
+  TORCH_CHECK(out.sizes() == IntArrayRef({bs, res_rows, res_cols}), "self must have the same shape as the output");
+
+  auto b_self = expand_size(self, {bs, res_rows, res_cols}, "baddbmm");
+  const Tensor bias = b_self->scalar_type() == out_dtype ? *b_self : b_self->to(out_dtype);
+  if (out_dtype == batch1.scalar_type()) {
+    return mps::addbmm_or_baddbmm_out_mps_impl(bias, batch1, batch2, beta, alpha, out, mps::BADDBMM_OP_TYPE);
+  }
+  return mps::addbmm_or_baddbmm_out_mps_impl(
+      bias, batch1.to(out_dtype), batch2.to(out_dtype), beta, alpha, out, mps::BADDBMM_OP_TYPE);
+}
+
+Tensor _baddbmm_dtype_mps(const Tensor& self,
+                          const Tensor& batch1,
+                          const Tensor& batch2,
+                          const at::ScalarType out_dtype,
+                          const Scalar& beta,
+                          const Scalar& alpha) {
+  TORCH_CHECK(self.scalar_type() == out_dtype || self.scalar_type() == batch1.dtype(),
+              "self dtype must match either out_dtype or batch1 dtype");
+  Tensor out = at::empty({batch1.size(0), batch1.size(1), batch2.size(2)}, batch1.options().dtype(out_dtype));
+  return _baddbmm_out_dtype_mps(self, batch1, batch2, out_dtype, beta, alpha, out);
 }
 
 Tensor& addbmm_out_mps(const Tensor& self,

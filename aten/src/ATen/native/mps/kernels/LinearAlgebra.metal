@@ -166,6 +166,42 @@ kernel void int_matmul(
   }
 }
 
+// Inputs narrower than the output: the accumulator is already opmath_t<T>, so
+// only the bias read and the store change type.
+template <typename T, typename TOut>
+kernel void addmm_dtype(
+    constant T* mat1Data [[buffer(0)]],
+    constant T* mat2Data [[buffer(1)]],
+    device TOut* outputData [[buffer(2)]],
+    constant TOut* biasData [[buffer(3)]],
+    constant array<c10::metal::opmath_t<T>, 2>& alpha_beta [[buffer(4)]],
+    constant array<ulong2, 4>& strides [[buffer(5)]],
+    constant uint3& sizes [[buffer(6)]],
+    uint2 tid [[thread_position_in_threadgroup]],
+    uint2 thread_id [[thread_position_in_grid]]) {
+  threadgroup c10::metal::opmath_t<T> A_tile[TILE_DIM][TILE_DIM];
+  threadgroup c10::metal::opmath_t<T> B_tile[TILE_DIM][TILE_DIM];
+
+  auto sum = matmul_inner<T>(
+      mat1Data,
+      mat2Data,
+      reinterpret_cast<constant array<ulong2, 3>&>(strides),
+      sizes,
+      A_tile,
+      B_tile,
+      tid,
+      thread_id);
+  if (thread_id.y < sizes.x && thread_id.x < sizes.z) {
+    using TA = c10::metal::opmath_t<T>;
+    auto bias = static_cast<TA>(
+        biasData[thread_id.y * strides[3].x + thread_id.x * strides[3].y]);
+    outputData[thread_id.y * strides[2].x + thread_id.x * strides[2].y] =
+        static_cast<TOut>(
+            c10::metal::mul(alpha_beta[0], sum) +
+            c10::metal::mul(alpha_beta[1], bias));
+  }
+}
+
 template <typename T>
 kernel void addmm(
     constant T* mat1Data [[buffer(0)]],
@@ -2717,6 +2753,23 @@ REGISTER_GEQRF(float);
 INSTANTIATE_MM_OPS(float);
 INSTANTIATE_MM_OPS(half);
 INSTANTIATE_MM_OPS(bfloat);
+
+#define INSTANTIATE_ADDMM_DTYPE(DTYPE, ODTYPE)                                \
+  template [[host_name("addmm_dtype_" #DTYPE "_" #ODTYPE)]] kernel void       \
+  addmm_dtype<DTYPE, ODTYPE>(                                                 \
+      constant DTYPE * mat1Data [[buffer(0)]],                                \
+      constant DTYPE * mat2Data [[buffer(1)]],                                \
+      device ODTYPE * outputData [[buffer(2)]],                               \
+      constant ODTYPE * biasData [[buffer(3)]],                               \
+      constant array<c10::metal::opmath_t<DTYPE>, 2> &                        \
+          alpha_beta [[buffer(4)]],                                           \
+      constant array<ulong2, 4> & strides [[buffer(5)]],                      \
+      constant uint3 & sizes [[buffer(6)]],                                   \
+      uint2 tid [[thread_position_in_threadgroup]],                           \
+      uint2 group_id [[threadgroup_position_in_grid]])
+
+INSTANTIATE_ADDMM_DTYPE(half, float);
+INSTANTIATE_ADDMM_DTYPE(bfloat, float);
 
 // Complex MM
 INSTANTIATE_MM_OPS(float2);
