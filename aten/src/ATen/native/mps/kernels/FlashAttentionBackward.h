@@ -164,22 +164,21 @@ flash_attn_bwd_dkdv(
 
   const int tidx = int(simd_group_id) * 32 + int(simd_lane_id);
 
-  for (int i = tidx; i < BK * LD; i += kNThreads) {
-    Ks[i] = 0;
-    Vs[i] = 0;
-  }
   for (int i = tidx; i < BQ * LK; i += kNThreads) {
     Ps[i] = 0;
     dSs[i] = 0;
   }
-  for (int i = tidx; i < BK * BD; i += kNThreads) {
-    const int r = i / BD;
-    const int c = i % BD;
+  // One writer per element: zeroing and filling in separate loops maps an
+  // element to two threads with no barrier between them.
+  for (int i = tidx; i < BK * LD; i += kNThreads) {
+    const int r = i / LD;
+    const int c = i % LD;
     const int kk = k0 + r;
-    if (kk < kL && c < D) {
-      Ks[r * LD + c] = static_cast<AccumType>(k_base[kk * params->K_strides[2] + c]);
-      Vs[r * LD + c] = static_cast<AccumType>(v_base[kk * params->V_strides[2] + c]);
-    }
+    const bool in = kk < kL && c < D;
+    Ks[i] = in ? static_cast<AccumType>(k_base[kk * params->K_strides[2] + c])
+               : AccumType(0);
+    Vs[i] = in ? static_cast<AccumType>(v_base[kk * params->V_strides[2] + c])
+               : AccumType(0);
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -199,19 +198,14 @@ flash_attn_bwd_dkdv(
   for (int q0 = q_start; q0 < qL; q0 += BQ) {
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (int i = tidx; i < BQ * LD; i += kNThreads) {
-      Qs[i] = 0;
-      dOs[i] = 0;
-    }
-    for (int i = tidx; i < BQ * BD; i += kNThreads) {
-      const int r = i / BD;
-      const int c = i % BD;
+      const int r = i / LD;
+      const int c = i % LD;
       const int q = q0 + r;
-      if (q < qL && c < D) {
-        Qs[r * LD + c] =
-            static_cast<AccumType>(q_base[q * params->Q_strides[2] + c]);
-        dOs[r * LD + c] =
-            static_cast<AccumType>(do_base[q * params->O_strides[2] + c]);
-      }
+      const bool in = q < qL && c < D;
+      Qs[i] = in ? static_cast<AccumType>(q_base[q * params->Q_strides[2] + c])
+                 : AccumType(0);
+      dOs[i] = in ? static_cast<AccumType>(do_base[q * params->O_strides[2] + c])
+                  : AccumType(0);
     }
     for (int i = tidx; i < BQ; i += kNThreads) {
       const int q = q0 + i;
