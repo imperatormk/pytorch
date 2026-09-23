@@ -2359,10 +2359,11 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # is smaller) crossed with four num_stages values that are inert on the
         # MSL path, so it compiles four identical binaries per tile.
         self.flex_attn_bwd_autotune_configs: list[FlexBwDConfig] = [
-            FlexBwDConfig(BLOCK_M, BLOCK_N, BLOCK_N, BLOCK_M, 2, 4)
+            FlexBwDConfig(BLOCK_M, BLOCK_N, BLOCK_N, BLOCK_M, 2, num_warps)
             for BLOCK_M in [32, 64]
             for BLOCK_N in [32, 64]
             if BLOCK_N % BLOCK_M == 0
+            for num_warps in [4, 8]
         ]
         self.exhaustive_flex_attn_bwd_configs = self.flex_attn_bwd_autotune_configs
 
