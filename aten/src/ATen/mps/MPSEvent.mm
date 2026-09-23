@@ -175,11 +175,9 @@ bool MPSEvent::query() const {
 }
 
 void MPSEvent::reset(MPSStream* stream, bool enable_timing) {
-  if (stream != m_stream) {
-    m_signalCounter = 0;
-    m_event.signaledValue = 0;
-    m_stream = stream;
-  }
+  // Metal ignores lowering a shared event's signaledValue, so the counter must
+  // stay monotonic across streams or synchronize() sees the event as signaled.
+  m_stream = stream;
   // Allocate fresh CPU-sync state. Any completion handler still outstanding from
   // a previous recording keeps a strong ref to the OLD state object and writes
   // there harmlessly, so the recycled event cannot be corrupted by a late
