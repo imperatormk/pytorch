@@ -2363,7 +2363,7 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             for BLOCK_M in [32, 64]
             for BLOCK_N in [32, 64]
             if BLOCK_N % BLOCK_M == 0
-            for num_warps in [4, 8]
+            for num_warps in [2, 4, 8]
         ]
         self.exhaustive_flex_attn_bwd_configs = self.flex_attn_bwd_autotune_configs
 
