@@ -175,43 +175,75 @@ def forward_inner(
 
     # loop over k, v and update accumulator until block_n_end
     for start_n in range(block_n_start, block_n_end):
-        # Here IS_DIVISIBLE acts are the start_n = tl.multiple_of(start_n, BLOCK_N) from triton_fused_attention.
-        if IS_DIVISIBLE:
-            acc, l_i, m_i = forward_block_mn(
-                {{gen_argdefs()}},
-                q, K, V, desc_k, desc_v, Q_LEN, KV_LEN,
-                # accumulated values
-                acc, l_i, m_i,
-                # Offsets
-                off_z, off_h, offs_m, offs_n,
-                # Offsets needed for TMA loads
-                kv_start,
-                kv_offset,
-                MATMUL_PRECISION, RCP_LN2,
-                # Strides for K and V
-                stride_kk, stride_kn, stride_vn, stride_vk,
-                IS_FULL_BLOCKS,
-            )
-        else:
-            # Benchmark shows even we applied mod & mask to each block for non divisible seqlen,
-            # it's on par or slightly faster than only applying to the last block in fwd.
-            # However, we choose different strategy for bwd, where we only apply mod & mask
-            # to the last block because it's faster a lot.
-            acc, l_i, m_i = forward_block_mn(
-                {{gen_argdefs()}},
-                q, K, V, desc_k, desc_v, Q_LEN, KV_LEN,
-                # accumulated values
-                acc, l_i, m_i,
-                # Offsets
-                off_z, off_h, offs_m, offs_n,
-                # Offsets needed for TMA loads
-                kv_start,
-                kv_offset,
-                MATMUL_PRECISION, RCP_LN2,
-                # Strides for K and V
-                stride_kk, stride_kn, stride_vn, stride_vk,
-                IS_FULL_BLOCKS, CHECK_BLOCK_BOUNDARY=True,
-            )
+        live = True
+        {%- if SKIP_MASKED_TILES %}
+        # A tile of a partial block that mask_mod removes entirely changes
+        # nothing; mask_mod reads only indices, so test it before the dots.
+        if not IS_FULL_BLOCKS:
+            m = get_bounded_indices(offs_m, None if IS_DIVISIBLE else Q_LEN)
+            n = get_bounded_indices(offs_n, None if IS_DIVISIBLE else KV_LEN)
+            {{ modification(
+                subgraph_number=1,
+                output_name="tile_mask",
+                score="m",
+                b="off_z",
+                h="off_h",
+                m="m",
+                n="n",
+                input_shapes={
+                    "score": ("BLOCK_M", "BLOCK_N"),
+                    "m": ("BLOCK_M", "1"),
+                    "n": ("1", "BLOCK_N"),
+                },
+                input_dtypes={
+                    "b": "index",
+                    "h": "index",
+                    "m": "index",
+                    "n": "index",
+                }
+            ) | indent_except_first(3) }}
+            if not IS_DIVISIBLE:
+                tile_mask = tl.where(offs_n < KV_LEN, tile_mask, False)
+            live = tl.max(tl.max(tile_mask.to(tl.int32), 1), 0) > 0
+        {%- endif %}
+        if live:
+            # Here IS_DIVISIBLE acts are the start_n = tl.multiple_of(start_n, BLOCK_N) from triton_fused_attention.
+            if IS_DIVISIBLE:
+                acc, l_i, m_i = forward_block_mn(
+                    {{gen_argdefs()}},
+                    q, K, V, desc_k, desc_v, Q_LEN, KV_LEN,
+                    # accumulated values
+                    acc, l_i, m_i,
+                    # Offsets
+                    off_z, off_h, offs_m, offs_n,
+                    # Offsets needed for TMA loads
+                    kv_start,
+                    kv_offset,
+                    MATMUL_PRECISION, RCP_LN2,
+                    # Strides for K and V
+                    stride_kk, stride_kn, stride_vn, stride_vk,
+                    IS_FULL_BLOCKS,
+                )
+            else:
+                # Benchmark shows even we applied mod & mask to each block for non divisible seqlen,
+                # it's on par or slightly faster than only applying to the last block in fwd.
+                # However, we choose different strategy for bwd, where we only apply mod & mask
+                # to the last block because it's faster a lot.
+                acc, l_i, m_i = forward_block_mn(
+                    {{gen_argdefs()}},
+                    q, K, V, desc_k, desc_v, Q_LEN, KV_LEN,
+                    # accumulated values
+                    acc, l_i, m_i,
+                    # Offsets
+                    off_z, off_h, offs_m, offs_n,
+                    # Offsets needed for TMA loads
+                    kv_start,
+                    kv_offset,
+                    MATMUL_PRECISION, RCP_LN2,
+                    # Strides for K and V
+                    stride_kk, stride_kn, stride_vn, stride_vk,
+                    IS_FULL_BLOCKS, CHECK_BLOCK_BOUNDARY=True,
+                )
 
 
 

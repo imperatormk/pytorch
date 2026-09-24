@@ -437,6 +437,11 @@ def flex_attention(
     # full_kv_num_blocks is None if partial blocks are not computed
     has_full_blocks = full_kv_num_blocks is not None
     kernel_options.setdefault("HAS_FULL_BLOCKS", has_full_blocks)
+    # Apple's tiles are far smaller than a mask block, so many tiles of a
+    # partial block are masked out whole; elsewhere unmeasured.
+    kernel_options.setdefault(
+        "SKIP_MASKED_TILES", query.get_device().type == "mps"
+    )
     if not has_full_blocks:
         full_kv_num_blocks, full_kv_indices = (
             empty(0, device=query.get_device()) for _ in range(2)
