@@ -1036,6 +1036,9 @@ def flex_attention_backward(*args, **kwargs):
     # full_kv_num_blocks is torch.zeros([1, 1, 1]) if partial blocks are not computed.
     has_full_blocks = full_kv_num_blocks is not None
     kernel_options.setdefault("HAS_FULL_BLOCKS", has_full_blocks)
+    kernel_options.setdefault(
+        "SKIP_MASKED_TILES", query.get_device().type == "mps"
+    )
     if not has_full_blocks:
         full_kv_num_blocks, full_kv_indices, full_q_num_blocks, full_q_indices = (
             empty(0, device=query.get_device()) for _ in range(4)

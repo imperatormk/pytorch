@@ -411,16 +411,48 @@ def bwd_dq_inner(
 
     kv_offset = 0
     for start_n in range(0, hi):
-        dq = bwd_dq_block_mn(
-            {{gen_argdefs()}},
-            dq, q, K, V, desc_k, desc_v, kv_start, kv_offset, start_m2,
-            do, Di, lse, Q_LEN, KV_LEN,
-            off_z, off_hq, offs_k, offs_v,
-            stride_kn, stride_kd, stride_vn, stride_vd,
-            kv_indices, sparse_kv_num_blocks,
-            MATMUL_PRECISION, RCP_LN2,
-            IS_FULL_BLOCKS,
-        )
+        live = True
+        {%- if SKIP_MASKED_TILES %}
+        if not IS_FULL_BLOCKS:
+            offs_n2 = kv_start + kv_offset + tl.arange(0, BLOCK_N2)
+            offs_m2 = start_m2 + tl.arange(0, BLOCK_M2)
+            n = get_bounded_indices(offs_n2[None, :], KV_LEN if not IS_DIVISIBLE else None)
+            m = get_bounded_indices(offs_m2[:, None], Q_LEN if not IS_DIVISIBLE else None)
+            {{ modification(
+                subgraph_number=2,
+                output_name="tile_mask",
+                score="m",
+                b="off_z",
+                h="off_hq",
+                m="m",
+                n="n",
+                input_shapes={
+                    "score": ("BLOCK_M2", "BLOCK_N2"),
+                    "m": ("BLOCK_M2", "1"),
+                    "n": ("1", "BLOCK_N2"),
+                },
+                input_dtypes={
+                    "b": "index",
+                    "h": "index",
+                    "m": "index",
+                    "n": "index",
+                }
+            ) | indent_except_first(3) }}
+            if not IS_DIVISIBLE:
+                tile_mask = tl.where(offs_n2[None, :] < KV_LEN, tile_mask, False)
+            live = tl.max(tl.max(tile_mask.to(tl.int32), 1), 0) > 0
+        {%- endif %}
+        if live:
+            dq = bwd_dq_block_mn(
+                {{gen_argdefs()}},
+                dq, q, K, V, desc_k, desc_v, kv_start, kv_offset, start_m2,
+                do, Di, lse, Q_LEN, KV_LEN,
+                off_z, off_hq, offs_k, offs_v,
+                stride_kn, stride_kd, stride_vn, stride_vd,
+                kv_indices, sparse_kv_num_blocks,
+                MATMUL_PRECISION, RCP_LN2,
+                IS_FULL_BLOCKS,
+            )
 
         # Increment pointers.
         offset = get_offset_for_next_block(
@@ -641,16 +673,44 @@ def bwd_dkdv_inner(
 
     offset_block = 0
     for start_m in range(0, hi):
-        dk, dv = bwd_dkdv_block_mn(
-            {{gen_argdefs()}},
-            dk, dv, Q, k, v, DO, DELTA, LSE,
-            desc_q, desc_do, q_start, offset_block, Q_LEN, KV_LEN,
-            off_z, off_hq, offs_n1, offs_m1, offs_k, offs_v,
-            stride_qm, stride_qd, stride_dom, stride_dod,
-            q_indices, sparse_q_num_blocks,
-            MATMUL_PRECISION, RCP_LN2,
-            IS_FULL_BLOCKS,
-        )
+        live = True
+        {%- if SKIP_MASKED_TILES %}
+        if not IS_FULL_BLOCKS:
+            m = get_bounded_indices(offs_m1[None, :], Q_LEN if not IS_DIVISIBLE else None)
+            n = get_bounded_indices(offs_n1[:, None], KV_LEN if not IS_DIVISIBLE else None)
+            {{ modification(
+                subgraph_number=2,
+                output_name="tile_mask",
+                b="off_z",
+                h="off_hq",
+                m="m",
+                n="n",
+                input_shapes={
+                    "m": ("1", "BLOCK_M1"),
+                    "n": ("BLOCK_N1", "1"),
+                },
+                input_dtypes={
+                    "b": "index",
+                    "h": "index",
+                    "m": "index",
+                    "n": "index",
+                }
+            ) | indent_except_first(3) }}
+            if not IS_DIVISIBLE:
+                tile_mask = tl.where(offs_m1[None, :] < Q_LEN, tile_mask, False)
+            live = tl.max(tl.max(tile_mask.to(tl.int32), 1), 0) > 0
+        {%- endif %}
+        if live:
+            dk, dv = bwd_dkdv_block_mn(
+                {{gen_argdefs()}},
+                dk, dv, Q, k, v, DO, DELTA, LSE,
+                desc_q, desc_do, q_start, offset_block, Q_LEN, KV_LEN,
+                off_z, off_hq, offs_n1, offs_m1, offs_k, offs_v,
+                stride_qm, stride_qd, stride_dom, stride_dod,
+                q_indices, sparse_q_num_blocks,
+                MATMUL_PRECISION, RCP_LN2,
+                IS_FULL_BLOCKS,
+            )
         # Increment pointers.
         offset = get_offset_for_next_block(
             start_m, q_indices, sparse_q_num_blocks,
