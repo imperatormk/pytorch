@@ -31,6 +31,9 @@ void MPSEvent::recordLocked(bool syncEvent) {
   // toggle -- keeps overlapping pairs from mis-nesting.
   const bool openedTimedPair = m_enable_timing && !m_stream->isTimingPinned();
   if (openedTimedPair) {
+    // The pair is timed by its command buffer's GPU span, so work encoded
+    // before the start record (a benchmark's cache flush) would be charged to it.
+    m_stream->synchronize(SyncType::COMMIT);
     m_stream->pinTiming();
   }
   ++m_signalCounter;
