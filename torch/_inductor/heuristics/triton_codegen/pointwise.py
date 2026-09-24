@@ -244,3 +244,28 @@ class XPUPointwiseHeuristic(PointwiseHeuristic):
             triton_config_fn(size_hints, 1, 1, bs),
             *hinted_configs,
         ]
+
+
+# ----------------------------------------------------------------------
+# MPS pointwise heuristic
+# ----------------------------------------------------------------------
+
+
+@register_codegen_heuristic("pointwise", "mps", register=torch.backends.mps.is_built())
+class MPSPointwiseHeuristic(PointwiseHeuristic):
+    """Pointwise configs for Apple GPUs through the AppleGPU Triton backend.
+
+    Adds one element per lane (512 over 16 warps). A select between two
+    computed halves of a 64-wide row is then uniform per simdgroup, so the
+    backend branches around the unused half instead of computing both.
+    """
+
+    def _configs_1d(
+        self, size_hints, bs, hinted_configs, triton_config_fn, inductor_meta
+    ):
+        configs = super()._configs_1d(
+            size_hints, bs, hinted_configs, triton_config_fn, inductor_meta
+        )
+        if len(configs) > 1 and size_hints["x"] >= 512:
+            configs.append(triton_config_fn(size_hints, 512, num_warps=16))
+        return configs
