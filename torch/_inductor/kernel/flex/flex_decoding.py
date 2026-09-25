@@ -111,6 +111,11 @@ def _use_flex_decoding(query, kv_indices, value, kernel_options, enable_gqa) -> 
     pw_of_two = V.graph.sizevars.guard_or_false(
         sympy.And(sympy.Gt(ratio, 0), sympy.Eq(ratio & (ratio - 1), 0))
     )
+    # The decode kernel reads one Q block's KV list for the whole query, so a
+    # block mask with several Q blocks (e.g. a 32-row block size) cannot use it.
+    single_q_block = V.graph.sizevars.guard_or_false(
+        sympy.Eq(kv_indices.get_size()[-2], 1)
+    )
 
     out = (
         not force_flex
@@ -121,6 +126,7 @@ def _use_flex_decoding(query, kv_indices, value, kernel_options, enable_gqa) -> 
         and non_zero_length
         and valid_block_mask_num_heads
         and pw_of_two
+        and single_q_block
     )
     log.debug(
         "Use flex decoding %s, force_flex_attention=%s, short_query_length=%s, static_batch=%s, static_num_heads=%s",
