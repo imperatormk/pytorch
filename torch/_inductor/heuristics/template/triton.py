@@ -2231,14 +2231,39 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
       dot operands one iteration ahead into registers. That pays where few
       tiles share a core and costs where the extra registers do, so under
       max-autotune every template tile is offered both ways and autotune
-      picks; a default config runs at 1. Depthwise conv has no dot, so both
-      values would compile the same kernel and it stays at 1. Deeper values
-      only add registers.
+      picks; a default config runs at 1. A GEMM or conv tile whose grid gives
+      each core more than _PIPELINE_TILES_PER_CORE threadgroups is offered at
+      1 only: its cores already hide the loads with other threadgroups.
+      Depthwise conv has no dot, so both values would compile the same kernel
+      and it stays at 1. Deeper values only add registers.
     """
+
+    _PIPELINE_TILES_PER_CORE = 2
 
     @staticmethod
     def _both_stages(configs: list[Any]) -> list[Any]:
         return [dataclasses.replace(c, num_stages=s) for c in configs for s in (1, 2)]
+
+    def preprocess_mm_configs(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        configs: list[BaseConfig],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Generator[TritonConfig, None, None]:
+        cores = DeviceProperties.create(torch.device("mps")).multi_processor_count
+        m_hint = V.graph.sizevars.optimization_hint_with_override(m, None)
+        n_hint = V.graph.sizevars.optimization_hint_with_override(n, None)
+        configs = [
+            c
+            for c in configs
+            if c.num_stages == 1
+            or math.ceil(m_hint / c.block_m) * math.ceil(n_hint / c.block_n)
+            <= self._PIPELINE_TILES_PER_CORE * cores
+        ]
+        return super().preprocess_mm_configs(m, n, k, configs, *args, **kwargs)
 
     def __init__(self) -> None:
         super().__init__()
