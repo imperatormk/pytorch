@@ -2374,6 +2374,10 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # As in the forward override, drop the CUDA-shaped default the base
         # class appends rather than let a config we cannot stage into the set.
         configs = [c for c in configs if c in self.flex_attn_bwd_autotune_configs]
+        # At head_dim 64, 2 warps spill (32/32/32/32: 194 stack accesses in the
+        # ISA) and ran 3x slower than 8 warps; wider heads only hold more per lane.
+        if head_dim >= 64:
+            configs = [c for c in configs if c.num_warps > 2]
         # Without max-autotune this default is the only config. At head_dim 64, 8 warps
         # beats 4 by ~25% (M1 Pro, T=256 and 1024); wider heads are unmeasured at 8.
         nw = 8 if head_dim <= 64 else 4
