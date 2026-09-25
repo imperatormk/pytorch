@@ -1971,9 +1971,9 @@ def create_block_mask(
     Q_LEN: int,
     KV_LEN: int,
     device: DeviceLikeType | None = None,
-    BLOCK_SIZE: int | tuple[int, int] = _DEFAULT_SPARSE_BLOCK_SIZE,
+    BLOCK_SIZE: int | tuple[int, int] | None = None,
     _compile=False,
-    separate_full_blocks: bool = True,
+    separate_full_blocks: bool | None = None,
     compute_dq_write_order: bool = False,
     dq_kv_order: bool = True,
 ) -> BlockMask:
@@ -1991,10 +1991,12 @@ def create_block_mask(
         KV_LEN (int): Sequence length of key/value.
         device (str): Device to run the mask creation on.
         BLOCK_SIZE (int or tuple[int, int]): Block size for the block mask. If a single int is provided it is used for both query and key/value.
+            Defaults to 128, or 32 on MPS (the size of its flex attention tiles).
         separate_full_blocks (bool): If True, fully unmasked blocks are stored
             separately so kernels can skip mask_mod on those blocks. If False,
             all non-empty blocks are stored as partial blocks and mask_mod is
-            applied to every block.
+            applied to every block. Defaults to True, or False on MPS, where one
+            masked loop over all blocks is faster than separate loops.
         compute_dq_write_order (bool): If True, precompute dQ write-order
             metadata needed by deterministic block-sparse FLASH backward.
         dq_kv_order (bool): KV-column scheduler order used for deterministic
@@ -2031,6 +2033,11 @@ def create_block_mask(
         B = 1
     if H is None:
         H = 1
+    on_mps = (torch.device(device) if device is not None else torch.get_default_device()).type == "mps"
+    if BLOCK_SIZE is None:
+        BLOCK_SIZE = 32 if on_mps else _DEFAULT_SPARSE_BLOCK_SIZE
+    if separate_full_blocks is None:
+        separate_full_blocks = not on_mps
     if isinstance(BLOCK_SIZE, int):
         Q_BLOCK_SIZE = BLOCK_SIZE
         KV_BLOCK_SIZE = BLOCK_SIZE

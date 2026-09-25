@@ -413,7 +413,7 @@ def bwd_dq_inner(
     for start_n in range(0, hi):
         live = True
         {%- if SKIP_MASKED_TILES %}
-        if not IS_FULL_BLOCKS:
+        if not IS_FULL_BLOCKS and SPARSE_KV_MULTIPLE > 1:
             offs_n2 = kv_start + kv_offset + tl.arange(0, BLOCK_N2)
             offs_m2 = start_m2 + tl.arange(0, BLOCK_M2)
             n = get_bounded_indices(offs_n2[None, :], KV_LEN if not IS_DIVISIBLE else None)
@@ -676,7 +676,7 @@ def bwd_dkdv_inner(
     for start_m in range(0, hi):
         live = True
         {%- if SKIP_MASKED_TILES %}
-        if not IS_FULL_BLOCKS:
+        if not IS_FULL_BLOCKS and SPARSE_Q_MULTIPLE > 1:
             m = get_bounded_indices(offs_m1[None, :], Q_LEN if not IS_DIVISIBLE else None)
             n = get_bounded_indices(offs_n1[:, None], KV_LEN if not IS_DIVISIBLE else None)
             {{ modification(

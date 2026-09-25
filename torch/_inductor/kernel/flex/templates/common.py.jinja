@@ -179,7 +179,7 @@ def forward_inner(
         {%- if SKIP_MASKED_TILES %}
         # A tile of a partial block that mask_mod removes entirely changes
         # nothing; mask_mod reads only indices, so test it before the dots.
-        if not IS_FULL_BLOCKS:
+        if not IS_FULL_BLOCKS and SPARSE_KV_MULTIPLE > 1:
             m = get_bounded_indices(offs_m, None if IS_DIVISIBLE else Q_LEN)
             n = get_bounded_indices(offs_n, None if IS_DIVISIBLE else KV_LEN)
             {{ modification(
