@@ -2227,11 +2227,10 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
       OutOfResources for over-budget configs and the autotuner discards them,
       but we keep the default config space small so we do not flood the
       autotuner with configs that always OOM.
-    - num_stages is pinned to 2: on the MSL path only the software pipeliner
-      reads it, and that runs solely under TRITON_MSL_PIPELINE (default off), so
-      every other value emits the same kernel. Offering ns=3 configs just makes
-      the autotuner compile and benchmark duplicate binaries and pick a winner
-      out of measurement noise.
+    - num_stages is pinned to 2: the AppleGPU backend does not read it, so
+      every value emits the same kernel. Offering other values just makes the
+      autotuner compile and benchmark duplicate binaries and pick a winner out
+      of measurement noise.
     """
 
     def __init__(self) -> None:
@@ -2252,6 +2251,10 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             GemmConfig(64, 16, 16, 2, 2),
             GemmConfig(32, 32, 16, 2, 2),
             GemmConfig(32, 32, 32, 2, 2),
+            # Long-K GEMMs such as weight gradients (K in the thousands, few
+            # output tiles): four warps per small tile keep each core fed
+            # through the K loop where two leave it waiting on loads.
+            GemmConfig(32, 32, 32, 2, 4),
             GemmConfig(64, 32, 16, 2, 4),
             GemmConfig(64, 32, 32, 2, 4),
             GemmConfig(32, 64, 16, 2, 4),
