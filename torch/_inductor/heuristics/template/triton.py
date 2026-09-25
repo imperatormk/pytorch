@@ -2227,11 +2227,18 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
       OutOfResources for over-budget configs and the autotuner discards them,
       but we keep the default config space small so we do not flood the
       autotuner with configs that always OOM.
-    - num_stages is pinned to 2: the AppleGPU backend does not read it, so
-      every value emits the same kernel. Offering other values just makes the
-      autotuner compile and benchmark duplicate binaries and pick a winner out
-      of measurement noise.
+    - num_stages 1 runs each loop as written; 2 has the backend load a loop's
+      dot operands one iteration ahead into registers. That pays where few
+      tiles share a core and costs where the extra registers do, so under
+      max-autotune every template tile is offered both ways and autotune
+      picks; a default config runs at 1. Depthwise conv has no dot, so both
+      values would compile the same kernel and it stays at 1. Deeper values
+      only add registers.
     """
+
+    @staticmethod
+    def _both_stages(configs: list[Any]) -> list[Any]:
+        return [dataclasses.replace(c, num_stages=s) for c in configs for s in (1, 2)]
 
     def __init__(self) -> None:
         super().__init__()
@@ -2335,6 +2342,12 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
             DepthwiseConv2dConfig(block_x=128, block_c=32, num_stages=2, num_warps=4),
             DepthwiseConv2dConfig(block_x=64, block_c=64, num_stages=2, num_warps=4),
         ]
+        # See the class docstring on num_stages.
+        self.mm_configs = self._both_stages(self.mm_configs)
+        self.conv_configs = self._both_stages(self.conv_configs)
+        self.depthwise_conv2d_configs = [
+            dataclasses.replace(c, num_stages=1) for c in self.depthwise_conv2d_configs
+        ]
         # Keep exhaustive search aligned with the default space; we have not
         # validated a larger Apple-GPU search space.
         self.exhaustive_configs = self.mm_configs
@@ -2342,33 +2355,39 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # Flex attention tiles. The base class defaults to 128x64 (fp16) /
         # 64x64 (fp32) at num_stages=3, which are CUDA shapes: on a 32KB
         # threadgroup budget a 128x64 fp32 tile cannot stage its operands, and
-        # num_stages is inert on the MSL path (see the class docstring), so
-        # every ns variant would compile to the same kernel. These mirror the
-        # tiles the flash-attention template already found optimal on Apple
-        # (task #233: BLOCK_M=32/BLOCK_N=32 at num_warps=4 won a 27-config
-        # sweep at S>=512, D=64).
-        self.flex_attn_fwd_autotune_configs = [
-            FlexConfig(32, 32, 2, 4),
-            FlexConfig(64, 32, 2, 4),
-            FlexConfig(32, 64, 2, 4),
-            FlexConfig(64, 64, 2, 8),
-            FlexConfig(16, 32, 2, 2),
-        ]
+        # num_stages follows the class docstring. These mirror the tiles the
+        # flash-attention template already found optimal on Apple (task #233:
+        # BLOCK_M=32/BLOCK_N=32 at num_warps=4 won a 27-config sweep at
+        # S>=512, D=64).
+        self.flex_attn_fwd_autotune_configs = self._both_stages(
+            [
+                FlexConfig(32, 32, 1, 4),
+                FlexConfig(64, 32, 1, 4),
+                FlexConfig(32, 64, 1, 4),
+                FlexConfig(64, 64, 1, 8),
+                FlexConfig(16, 32, 1, 2),
+            ]
+        )
         self.exhaustive_flex_attn_fwd_configs = self.flex_attn_fwd_autotune_configs
 
         # The inherited backward list is the same CUDA shape as the forward one:
         # BLOCK_N up to 128 (which cannot stage on a 32KB budget, and trips the
         # template's SPARSE_KV_BLOCK_SIZE >= BLOCK_N assert once the sparse block
-        # is smaller) crossed with four num_stages values that are inert on the
-        # MSL path, so it compiles four identical binaries per tile.
-        self.flex_attn_bwd_autotune_configs: list[FlexBwDConfig] = [
-            FlexBwDConfig(BLOCK_M, BLOCK_N, BLOCK_N, BLOCK_M, 2, num_warps)
-            for BLOCK_M in [32, 64]
-            for BLOCK_N in [32, 64]
-            if BLOCK_N % BLOCK_M == 0
-            for num_warps in [2, 4, 8]
-        ]
+        # is smaller) crossed with four num_stages values.
+        self.flex_attn_bwd_autotune_configs: list[FlexBwDConfig] = self._both_stages(
+            [
+                FlexBwDConfig(BLOCK_M, BLOCK_N, BLOCK_N, BLOCK_M, 1, num_warps)
+                for BLOCK_M in [32, 64]
+                for BLOCK_N in [32, 64]
+                if BLOCK_N % BLOCK_M == 0
+                for num_warps in [2, 4, 8]
+            ]
+        )
         self.exhaustive_flex_attn_bwd_configs = self.flex_attn_bwd_autotune_configs
+        self.flex_decode_autotune_configs = self._both_stages(
+            self.flex_decode_autotune_configs
+        )
+        self.exhaustive_flex_decode_configs = self.flex_decode_autotune_configs
 
     def get_flex_attn_bwd_configs(
         self, head_dim: int, dtype: Any
@@ -2384,7 +2403,7 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # Without max-autotune this default is the only config. At head_dim 64, 8 warps
         # beats 4 by ~25% (M1 Pro, T=256 and 1024); wider heads are unmeasured at 8.
         nw = 8 if head_dim <= 64 else 4
-        default = FlexBwDConfig(32, 32, 32, 32, 2, nw)
+        default = FlexBwDConfig(32, 32, 32, 32, 1, nw)
         if default not in configs:
             configs.append(default)
         return configs
@@ -2396,7 +2415,7 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # The base implementation appends a CUDA-shaped default that our tile
         # budget cannot honour; replace it rather than let it into the set.
         nw = 4 if head_dim <= 64 else 2
-        default = FlexConfig(32, 32, 2, nw)
+        default = FlexConfig(32, 32, 1, nw)
         configs = [c for c in configs if c in self.flex_attn_fwd_autotune_configs]
         if default not in configs:
             configs.append(default)
