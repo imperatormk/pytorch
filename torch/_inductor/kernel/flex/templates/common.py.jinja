@@ -34,7 +34,7 @@ def forward_block_mn(
     # Load K as [BLOCK_N, QK_HEAD_DIM_ROUNDED] then transpose to [QK_HEAD_DIM_ROUNDED, BLOCK_N]
     offs_k = tl.arange(0, QK_HEAD_DIM_ROUNDED)
     offs_n_load = kv_base_offset + tl.arange(0, BLOCK_N)
-    k = load_checked_2d(K, offs_n_load, offs_k, stride_kn, stride_kk, IS_DIVISIBLE, SAFE_HEAD_DIM, KV_LEN, QK_HEAD_DIM, INDEX_DTYPE)
+    k = load_checked_2d(K, offs_n_load, offs_k, stride_kn, stride_kk, IS_DIVISIBLE or not CHECK_BLOCK_BOUNDARY, SAFE_HEAD_DIM, KV_LEN, QK_HEAD_DIM, INDEX_DTYPE)
     {%- endif %}
 
     k = tl.trans(k)
@@ -47,7 +47,7 @@ def forward_block_mn(
     # If this is the last block of a non divisible seqlen, we still need to load [BLOCK_M, BLOCK_N] elements,
     # which is larger than the actual number of elements. To avoid access memory out of bound,
     # we need to mask out the elements that are out of Q_LEN & KV_LEN.
-    m = get_bounded_indices(offs_m, Q_LEN if CHECK_BLOCK_BOUNDARY else None)
+    m = get_bounded_indices(offs_m, Q_LEN if CHECK_BLOCK_BOUNDARY or not IS_DIVISIBLE else None)
     n = get_bounded_indices(offs_n, KV_LEN if CHECK_BLOCK_BOUNDARY else None)
 
     {{ modification(
@@ -132,7 +132,7 @@ def forward_block_mn(
     {%- else %}
     # Calculate offsets for V loading - reuse kv_base_offset from K loading
     offs_v = tl.arange(0, V_HEAD_DIM_ROUNDED)
-    v = load_checked_2d(V, offs_n_load, offs_v, stride_vn, stride_vk, IS_DIVISIBLE, SAFE_HEAD_DIM, KV_LEN, V_HEAD_DIM, INDEX_DTYPE)
+    v = load_checked_2d(V, offs_n_load, offs_v, stride_vn, stride_vk, IS_DIVISIBLE or not CHECK_BLOCK_BOUNDARY, SAFE_HEAD_DIM, KV_LEN, V_HEAD_DIM, INDEX_DTYPE)
     {%- endif %}
     acc = tl.dot(p.to(MATMUL_PRECISION), v.to(q.dtype), acc, input_precision=FLOAT32_PRECISION)
 
@@ -226,6 +226,25 @@ def forward_inner(
                     stride_kk, stride_kn, stride_vn, stride_vk,
                     IS_FULL_BLOCKS,
                 )
+            {%- if CHECK_EDGE_TILES_ONLY %}
+            elif kv_start + kv_offset + BLOCK_N <= KV_LEN:
+                # Only the tile that crosses KV_LEN needs the bound checks.
+                acc, l_i, m_i = forward_block_mn(
+                    {{gen_argdefs()}},
+                    q, K, V, desc_k, desc_v, Q_LEN, KV_LEN,
+                    # accumulated values
+                    acc, l_i, m_i,
+                    # Offsets
+                    off_z, off_h, offs_m, offs_n,
+                    # Offsets needed for TMA loads
+                    kv_start,
+                    kv_offset,
+                    MATMUL_PRECISION, RCP_LN2,
+                    # Strides for K and V
+                    stride_kk, stride_kn, stride_vn, stride_vk,
+                    IS_FULL_BLOCKS,
+                )
+            {%- endif %}
             else:
                 # Benchmark shows even we applied mod & mask to each block for non divisible seqlen,
                 # it's on par or slightly faster than only applying to the last block in fwd.

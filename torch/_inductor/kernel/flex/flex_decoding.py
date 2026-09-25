@@ -251,6 +251,9 @@ def create_flex_decoding_kernel(*args, **kwargs):
     kernel_options.setdefault(
         "SKIP_MASKED_TILES", query.get_device().type == "mps"
     )
+    kernel_options.setdefault(
+        "CHECK_EDGE_TILES_ONLY", query.get_device().type == "mps"
+    )
     if not has_full_blocks:
         # Create a placeholder full block list in case it is empty
         full_kv_num_blocks, full_kv_indices = (

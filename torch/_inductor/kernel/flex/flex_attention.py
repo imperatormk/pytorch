@@ -442,6 +442,11 @@ def flex_attention(
     kernel_options.setdefault(
         "SKIP_MASKED_TILES", query.get_device().type == "mps"
     )
+    # With a ragged sequence, bound-check only the tile crossing its end;
+    # upstream measured checking every tile as on par for CUDA forward.
+    kernel_options.setdefault(
+        "CHECK_EDGE_TILES_ONLY", query.get_device().type == "mps"
+    )
     if not has_full_blocks:
         full_kv_num_blocks, full_kv_indices = (
             empty(0, device=query.get_device()) for _ in range(2)
