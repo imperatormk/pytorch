@@ -4,10 +4,14 @@ from typing import Any, TYPE_CHECKING
 
 import sympy
 
+from torch._inductor import config as inductor_config
 from torch._inductor.heuristics.registry import register_template_heuristic
 
 from ...ir import get_free_symbols
-from ...kernel.mm import decompose_k_subgraph_template
+from ...kernel.mm import (
+    decompose_k_addmm_subgraph_template,
+    decompose_k_subgraph_template,
+)
 from ...kernel_inputs import KernelInputs, MMKernelInputs
 from ...utils import get_k_splits
 from ...virtualized import V
@@ -20,6 +24,9 @@ if TYPE_CHECKING:
 
 
 @register_template_heuristic(decompose_k_subgraph_template.uid, None, op_name="mm")
+@register_template_heuristic(
+    decompose_k_addmm_subgraph_template.uid, None, op_name="addmm"
+)
 class EmptyDecomposeKConfigHeuristics(TemplateConfigHeuristics):
     """empty heuristics to skip decompose k on anything not cuda"""
 
@@ -33,6 +40,11 @@ class EmptyDecomposeKConfigHeuristics(TemplateConfigHeuristics):
     decompose_k_subgraph_template.uid,
     "mps",
     op_name="mm",
+)
+@register_template_heuristic(
+    decompose_k_addmm_subgraph_template.uid,
+    "mps",
+    op_name="addmm",
 )
 # Register on CUDA (both NVIDIA and ROCm/HIP)
 # Runtime enablement is controlled by config.triton.num_decompose_k_splits (0 disables)
@@ -69,9 +81,20 @@ class DecomposeKConfigHeuristics(GemmMaxAutotuneTemplateConfigHeuristics):
 
         m, n, k = kernel_inputs.mnk_symbolic()
         k_splits = get_k_splits(m, n, k)
+        backends = ["ATEN"]
+        if kernel_inputs.device_type == "mps":
+            allowed = inductor_config.max_autotune_gemm_backends.upper().split(",")
+            backends = [b for b in ("ATEN", "TRITON") if b in allowed]
+        extra: dict[str, Any] = {}
+        if op_name == "addmm":
+            extra = {
+                "alpha": kernel_inputs.get_scalar("alpha"),
+                "beta": kernel_inputs.get_scalar("beta"),
+            }
         for k_split in k_splits:
             if not V.graph.sizevars.statically_known_true(
                 sympy.Eq(sympy.Mod(k, k_split), 0)
             ):
                 continue
-            yield {"k_split": k_split}
+            for backend in backends:
+                yield {"k_split": k_split, "bmm_backend": backend, **extra}

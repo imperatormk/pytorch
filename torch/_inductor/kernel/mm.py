@@ -237,42 +237,71 @@ def decomposeK(a, b, k_splits):
     return reduced_buf.to(a.dtype)
 
 
+def decomposeK_addmm(inp, a, b, k_splits, alpha=1, beta=1):
+    out = decomposeK(a, b, k_splits)
+    if alpha != 1:
+        out = out * alpha
+    if beta != 0:
+        out = out + (inp if beta == 1 else inp * beta)
+    return out
+
+
 class DecomposeKSugraphTemplate(SubgraphTemplate):
-    def __init__(self):
+    def __init__(self, op: str = "mm"):
         super().__init__(
-            name="decompose_k",
+            name="decompose_k" if op == "mm" else f"decompose_k_{op}",
         )
+        self.op = op
 
     def generate(  # type: ignore[override]
         self,
         input_nodes: list[Buffer],
         layout: Layout,
         k_split: int,
+        bmm_backend: str = "ATEN",
+        alpha: Any = 1,
+        beta: Any = 1,
     ) -> SubgraphChoiceCaller:
         from torch._dispatch.python import enable_python_dispatcher
 
         from ..decomposition import select_decomp_table
 
-        name = f"decompose_k_mm_{k_split}_split"
-        description = f"{k_split=}"
+        name = f"decompose_k_{self.op}_{k_split}_split"
+        if bmm_backend != "ATEN":
+            name += f"_{bmm_backend.lower()}"
+        description = f"{k_split=} {bmm_backend=}"
+
+        if self.op == "mm":
+            decomposition = functools.partial(decomposeK, k_splits=k_split)
+        else:
+            decomposition = functools.partial(
+                decomposeK_addmm, k_splits=k_split, alpha=alpha, beta=beta
+            )
 
         with enable_python_dispatcher():
             decompositions = select_decomp_table()
-            fn = make_fx(
-                functools.partial(decomposeK, k_splits=k_split),
-                decompositions,
-            )
+            fn = make_fx(decomposition, decompositions)
 
-            return super().generate(
+            caller = super().generate(
                 name=name,
                 input_nodes=input_nodes,
                 layout=layout,
                 make_fx_graph=fn,
                 description=description,
             )
+        # Subgraphs compile with max_autotune off and aten-only GEMM backends,
+        # and with max_autotune off use_aten_gemm_kernels() is always true, so
+        # both must be patched for the split bmm to drop the aten choice.
+        if bmm_backend != "ATEN":
+            caller.config_patches = {
+                "max_autotune_gemm": True,
+                "max_autotune_gemm_backends": bmm_backend,
+            }
+        return caller
 
 
 decompose_k_subgraph_template = DecomposeKSugraphTemplate()
+decompose_k_addmm_subgraph_template = DecomposeKSugraphTemplate(op="addmm")
 
 
 class ContiguousTemplate(SubgraphTemplate):
@@ -751,6 +780,22 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
         # On ROCm, ATen choices use original bias input; non-ROCm keeps unified inputs.
         choices.extend(
             V.choices.get_template_configs(kernel_inputs_aten, aten_templates, name)
+        )
+
+    if (
+        is_nonzero
+        and mat1.get_dtype() == mat2.get_dtype()
+        and use_triton_template(layout, check_max_autotune=True)
+        and use_decompose_k_choice(m, n, k)
+    ):
+        # Autotune feeds subgraph choices the extern inputs: the aten choice's
+        # un-expanded bias when one exists, else the unified ones. Trace the
+        # subgraph against the same set or its size asserts fail.
+        subgraph_inputs = kernel_inputs_aten if use_aten_gemm_kernels() else kernel_inputs
+        choices.extend(
+            V.choices.get_template_configs(
+                subgraph_inputs, [decompose_k_addmm_subgraph_template], name
+            )
         )
 
     if is_nonzero and use_triton_template(layout, check_max_autotune=False):
