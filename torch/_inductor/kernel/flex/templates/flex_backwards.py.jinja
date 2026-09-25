@@ -440,7 +440,8 @@ def bwd_dq_inner(
             ) | indent_except_first(3) }}
             if not IS_DIVISIBLE:
                 tile_mask = tl.where(offs_n2[None, :] < KV_LEN, tile_mask, False)
-            live = tl.max(tl.max(tile_mask.to(tl.int32), 1), 0) > 0
+            tile_mask = tile_mask.to(tl.int32) + tl.zeros([BLOCK_M2, BLOCK_N2], tl.int32)
+            live = tl.max(tl.max(tile_mask, 1), 0) > 0
         {%- endif %}
         if live:
             dq = bwd_dq_block_mn(
@@ -698,7 +699,8 @@ def bwd_dkdv_inner(
             ) | indent_except_first(3) }}
             if not IS_DIVISIBLE:
                 tile_mask = tl.where(offs_m1[None, :] < Q_LEN, tile_mask, False)
-            live = tl.max(tl.max(tile_mask.to(tl.int32), 1), 0) > 0
+            tile_mask = tile_mask.to(tl.int32) + tl.zeros([BLOCK_N1, BLOCK_M1], tl.int32)
+            live = tl.max(tl.max(tile_mask, 1), 0) > 0
         {%- endif %}
         if live:
             dk, dv = bwd_dkdv_block_mn(

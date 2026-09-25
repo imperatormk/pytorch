@@ -204,7 +204,9 @@ def forward_inner(
             ) | indent_except_first(3) }}
             if not IS_DIVISIBLE:
                 tile_mask = tl.where(offs_n < KV_LEN, tile_mask, False)
-            live = tl.max(tl.max(tile_mask.to(tl.int32), 1), 0) > 0
+            # mask_mod may not depend on m and n (the noop mask is a [1] constant); widen to the tile.
+            tile_mask = tile_mask.to(tl.int32) + tl.zeros([BLOCK_M, BLOCK_N], tl.int32)
+            live = tl.max(tl.max(tile_mask, 1), 0) > 0
         {%- endif %}
         if live:
             # Here IS_DIVISIBLE acts are the start_n = tl.multiple_of(start_n, BLOCK_N) from triton_fused_attention.
