@@ -2374,7 +2374,10 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # As in the forward override, drop the CUDA-shaped default the base
         # class appends rather than let a config we cannot stage into the set.
         configs = [c for c in configs if c in self.flex_attn_bwd_autotune_configs]
-        default = FlexBwDConfig(32, 32, 32, 32, 2, 4)
+        # Without max-autotune this default is the only config. At head_dim 64, 8 warps
+        # beats 4 by ~25% (M1 Pro, T=256 and 1024); wider heads are unmeasured at 8.
+        nw = 8 if head_dim <= 64 else 4
+        default = FlexBwDConfig(32, 32, 32, 32, 2, nw)
         if default not in configs:
             configs.append(default)
         return configs
