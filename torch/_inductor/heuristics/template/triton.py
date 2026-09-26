@@ -2398,16 +2398,15 @@ class MPSConfigHeuristic(BaseConfigHeuristic):
         # The inherited backward list is the same CUDA shape as the forward one:
         # BLOCK_N up to 128 (which cannot stage on a 32KB budget, and trips the
         # template's SPARSE_KV_BLOCK_SIZE >= BLOCK_N assert once the sparse block
-        # is smaller) crossed with four num_stages values.
-        self.flex_attn_bwd_autotune_configs: list[FlexBwDConfig] = self._both_stages(
-            [
-                FlexBwDConfig(BLOCK_M, BLOCK_N, BLOCK_N, BLOCK_M, 1, num_warps)
-                for BLOCK_M in [32, 64]
-                for BLOCK_N in [32, 64]
-                if BLOCK_N % BLOCK_M == 0
-                for num_warps in [2, 4, 8]
-            ]
-        )
+        # is smaller) crossed with four num_stages values. Backward stays at
+        # num_stages 1: pipelined, it never won on time.
+        self.flex_attn_bwd_autotune_configs: list[FlexBwDConfig] = [
+            FlexBwDConfig(BLOCK_M, BLOCK_N, BLOCK_N, BLOCK_M, 1, num_warps)
+            for BLOCK_M in [32, 64]
+            for BLOCK_N in [32, 64]
+            if BLOCK_N % BLOCK_M == 0
+            for num_warps in [2, 4, 8]
+        ]
         self.exhaustive_flex_attn_bwd_configs = self.flex_attn_bwd_autotune_configs
         self.flex_decode_autotune_configs = self._both_stages(
             self.flex_decode_autotune_configs
