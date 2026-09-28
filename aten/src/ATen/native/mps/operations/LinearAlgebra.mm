@@ -2357,11 +2357,7 @@ Tensor& _addmm_dtype_out_mps(const Tensor& self,
   }
 
   const Tensor bias = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
-  // The metal kernel accumulates in opmath_t, so it reads the narrow operands
-  // and stores fp32 directly. MPSGraph emits its operand dtype, so the graph
-  // path needs the operands widened first.
-  if (out_dtype == at::ScalarType::Float &&
-      (mat1.scalar_type() == at::ScalarType::Half || mat1.scalar_type() == at::ScalarType::BFloat16)) {
+  if (mps::use_metal_mm(mat1, mat2, out)) {
     auto mat1_ = mat1.is_conj() ? mat1.resolve_conj() : mat1;
     auto mat2_ = mat2.is_conj() ? mat2.resolve_conj() : mat2;
     return mps::do_metal_addmm_dtype(mat1_, mat2_, out, alpha, beta, bias.expand({mat1.size(0), mat2.size(1)}));
