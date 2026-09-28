@@ -162,6 +162,15 @@ static at::Tensor& copy_from_mps_(at::Tensor& dst_, const at::Tensor& src_, bool
   }
 
   MPSStream* stream = getCurrentMPSStream();
+
+  // The blit below waits on this stream only, but a tensor carries no record of
+  // the stream that produced it: a copy issued on a second stream would read a
+  // source whose producing encoder is still uncommitted elsewhere, and hand the
+  // host zeros. Land every stream's pending work first when the wait is what
+  // makes the destination readable.
+  if (!non_blocking && stream != at::mps::getDefaultMPSStream()) {
+    at::mps::synchronizeAllMPSStreams(at::mps::SyncType::COMMIT_AND_WAIT);
+  }
   Tensor dst = dst_;
   Tensor src = src_;
 
