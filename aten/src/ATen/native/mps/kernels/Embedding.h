@@ -2,6 +2,7 @@
 #include <c10/metal/common.h>
 
 struct EmbeddingRenormParams {
+  int64_t num_weights;
   uint32_t num_indices;
   uint32_t feature_size;
   uint32_t weight_row_stride;

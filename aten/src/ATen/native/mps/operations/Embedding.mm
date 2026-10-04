@@ -134,6 +134,7 @@ Tensor& embedding_renorm_mps_(Tensor& self, const Tensor& indices, double max_no
   auto self_contig = self.is_contiguous() ? self : self.contiguous();
 
   EmbeddingRenormParams params{};
+  params.num_weights = self_contig.size(0);
   params.num_indices = static_cast<uint32_t>(num_indices);
   params.feature_size = safe_downcast<uint32_t, int64_t>(self_contig.size(1));
   params.weight_row_stride = safe_downcast<uint32_t, int64_t>(self_contig.stride(0));

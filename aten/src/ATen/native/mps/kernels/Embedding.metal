@@ -83,8 +83,14 @@ kernel void embedding_dense_backward(
       grad_val);
 }
 
+template <typename I>
+inline long embedding_row(I index, long num_weights) {
+  const long row = static_cast<long>(index);
+  return row < 0 ? row + num_weights : row;
+}
+
 // One thread per index. Duplicated indices would each scale the same row, so
-// only the first occurrence of a value acts -- the CPU kernel gets the same
+// only the first occurrence of a row acts -- the CPU kernel gets the same
 // effect by sorting and skipping equal neighbours.
 template <typename T, typename I>
 kernel void embedding_renorm(
@@ -92,9 +98,9 @@ kernel void embedding_renorm(
     constant I* indices [[buffer(1)]],
     constant EmbeddingRenormParams& params [[buffer(2)]],
     uint tid [[thread_position_in_grid]]) {
-  long row = static_cast<long>(indices[tid]);
+  const long row = embedding_row(indices[tid], params.num_weights);
   for (uint i = 0; i < tid; ++i) {
-    if (static_cast<long>(indices[i]) == row) {
+    if (embedding_row(indices[i], params.num_weights) == row) {
       return;
     }
   }
