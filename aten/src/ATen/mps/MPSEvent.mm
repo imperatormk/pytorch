@@ -288,7 +288,7 @@ double MPSEventPool::elapsedTime(id_t start_event_id, id_t end_event_id) {
     }
   }
   for (MPSStream* stream : streams) {
-    dispatch_sync(stream->queue(), ^() {
+    dispatch_sync_with_rethrow(stream->queue(), ^() {
       stream->synchronize(SyncType::COMMIT_AND_WAIT);
     });
   }
